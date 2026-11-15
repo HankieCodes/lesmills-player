@@ -13,10 +13,11 @@
     "test:watch": "vitest",
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json",
-    "binaries:win": "node scripts/fetch-binaries.mjs",
+    "binaries:win": "node scripts/fetch-binaries.mjs win",
     "dist:win": "pnpm binaries:win && pnpm build && electron-builder --win --x64 --publish never",
     "icon": "node scripts/build-icon.mjs",
-    "dist:mac": "pnpm build && electron-builder --mac --publish never"
+    "dist:mac": "pnpm binaries:mac && pnpm build && electron-builder --mac --publish never",
+    "binaries:mac": "node scripts/fetch-binaries.mjs mac"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
@@ -43,23 +44,13 @@
   "author": "Hank",
   "build": {
     "appId": "com.brekke-peer.lmplayer",
-    "productName": "lmplayer",
+    "productName": "Les Mills Player",
     "directories": {
       "output": "dist"
     },
     "files": [
       "out/**/*",
       "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "resources/win",
-        "to": "bin",
-        "filter": [
-          "ffmpeg.exe",
-          "fpcalc.exe"
-        ]
-      }
     ],
     "win": {
       "target": [
@@ -70,7 +61,18 @@
           ]
         }
       ],
-      "signAndEditExecutable": false
+      "signAndEditExecutable": false,
+      "executableName": "lmplayer",
+      "extraResources": [
+        {
+          "from": "resources/win",
+          "to": "bin",
+          "filter": [
+            "ffmpeg.exe",
+            "fpcalc.exe"
+          ]
+        }
+      ]
     },
     "artifactName": "lmplayer-${version}-${os}-${arch}.${ext}",
     "icon": "resources/icon.png",
@@ -85,9 +87,17 @@
           ]
         }
       ],
-      "extendInfo": {
-        "CFBundleDisplayName": "Les Mills Player"
-      }
-    }
+      "extraResources": [
+        {
+          "from": "resources/mac-${arch}",
+          "to": "bin",
+          "filter": [
+            "ffmpeg",
+            "fpcalc"
+          ]
+        }
+      ]
+    },
+    "afterPack": "scripts/after-pack.mjs"
   }
 }

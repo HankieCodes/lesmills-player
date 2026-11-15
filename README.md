@@ -50,10 +50,10 @@ The zip is unpacked-and-run (`lmplayer.exe`); ffmpeg and fpcalc ship inside it. 
 ## macOS build
 
 ```bash
-pnpm dist:mac     # must run on a Mac; writes dist/lmplayer-<version>-mac-<arch>.zip containing lmplayer.app
+pnpm dist:mac     # downloads macOS ffmpeg + fpcalc into resources/mac-{x64,arm64}, builds, writes dist/lmplayer-<version>-mac-<arch>.zip
 ```
 
-The macOS build does not bundle ffmpeg or fpcalc, so they must be on `PATH` (for example `brew install ffmpeg chromaprint`).
+Each zip contains `Les Mills Player.app/` with the executable at `Contents/MacOS/lmplayer` (renamed by `scripts/after-pack.mjs`, since electron-builder derives both names from one setting) and the matching-architecture ffmpeg and fpcalc in `Contents/Resources/bin/`. It is unsigned.
 
 ## Branding
 
