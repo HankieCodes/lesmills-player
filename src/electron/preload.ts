@@ -1,16 +1,22 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { AnalyzeInput, AnalyzeOutput, AnalyzeProgress } from "../analyzer/analyzer";
-import type { ReleaseFolder } from "../shared/types";
+import type { ParsedLrc, WorkspaceFile } from "../shared/types";
+
+const invoke = <T>(channel: string, ...args: unknown[]): Promise<T> => ipcRenderer.invoke(channel, ...args) as Promise<T>;
 
 const api = {
-  releases: {
-    list: (folders: string[]): Promise<ReleaseFolder[]> => ipcRenderer.invoke("lmsync:releases", folders),
-    pickFolder: (): Promise<string | null> => ipcRenderer.invoke("lmsync:pickFolder"),
+  analyze: (input: AnalyzeInput) => invoke<AnalyzeOutput>("lmsync:analyze", input),
+  loadLrc: (lrcPath: string) => invoke<ParsedLrc | null>("lmsync:lrc", lrcPath),
+  /** Native multi-select file dialog (videos, MP3, LRC). */
+  pickFiles: () => invoke<string[]>("lmsync:pickFiles"),
+  exists: (paths: string[]) => invoke<Record<string, boolean>>("lmsync:exists", paths),
+  workspace: {
+    load: () => invoke<WorkspaceFile | null>("lmsync:workspace:load"),
+    save: (workspace: WorkspaceFile) => invoke<void>("lmsync:workspace:save", workspace),
+    open: () => invoke<{ path: string; workspace: WorkspaceFile } | null>("lmsync:workspace:open"),
+    saveAs: (workspace: WorkspaceFile) => invoke<string | null>("lmsync:workspace:saveAs", workspace),
   },
-  analyze: (input: AnalyzeInput): Promise<AnalyzeOutput> => ipcRenderer.invoke("lmsync:analyze", input),
-  cache: {
-    clear: (): Promise<void> => ipcRenderer.invoke("lmsync:cache:clear"),
-  },
+  clearCache: () => invoke<void>("lmsync:cache:clear"),
   /** Must run in the preload: File objects cannot cross IPC. */
   pathForFile: (file: File): string => webUtils.getPathForFile(file),
   onProgress: (listener: (progress: AnalyzeProgress) => void): (() => void) => {

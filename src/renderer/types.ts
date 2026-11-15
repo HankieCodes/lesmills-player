@@ -1,28 +1,18 @@
-import type { Alignment, MatchReport, ParsedLrc, ReleaseFolder, VideoSource } from "../shared/types";
+import type { Alignment, MatchReport } from "../shared/types";
 
-export interface VideoTileState {
-  id: string;
-  source: VideoSource;
-  path: string;
-  fileName: string;
-  release: ReleaseFolder;
-  alignment: Alignment;
-  matchReport: MatchReport;
-  lrcs: Record<number, ParsedLrc>;
-}
-
-export interface PendingTileState {
-  id: string;
-  fileName: string;
-  message: string;
-  fraction: number;
+/** Alignment state of one video in the workspace. */
+export interface VideoAnalysis {
+  /** Signature of the MP3 set the alignment was computed for; null before the first run. */
+  sig: string | null;
+  alignment: Alignment | null;
+  report: MatchReport | null;
+  running: { message: string; fraction: number } | null;
   error: string | null;
 }
 
-/** A loop over one LRC block, expressed on the reference video's timeline. */
 export interface LoopRange {
   startSec: number;
   endSec: number;
-  trackNo: number;
   cueIndex: number;
+  trackKey: string | null;
 }

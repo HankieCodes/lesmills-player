@@ -15,6 +15,8 @@ interface TransportBarProps {
   speed: number;
   trackNo: number | null;
   loopActive: boolean;
+  /** Previous/next track need an alignment. */
+  canSkipTracks: boolean;
   onTogglePlay: () => void;
   onSkip: (deltaSec: number) => void;
   onSetSpeed: (speed: number) => void;
@@ -44,7 +46,7 @@ export function TransportBar(props: TransportBarProps) {
           {trackNo !== null && <span className="badge dim">track {trackNo}</span>}
         </span>
         <div className="transport-center">
-          <button disabled={disabled} onClick={props.onPrevTrack} title="Previous track / restart track">
+          <button disabled={disabled || !props.canSkipTracks} onClick={props.onPrevTrack} title="Previous track / restart track">
             ⏮
           </button>
           <button disabled={disabled} onClick={() => props.onSkip(-5)}>
@@ -56,7 +58,7 @@ export function TransportBar(props: TransportBarProps) {
           <button disabled={disabled} onClick={() => props.onSkip(5)}>
             +5s
           </button>
-          <button disabled={disabled} onClick={props.onNextTrack} title="Next track">
+          <button disabled={disabled || !props.canSkipTracks} onClick={props.onNextTrack} title="Next track">
             ⏭
           </button>
         </div>

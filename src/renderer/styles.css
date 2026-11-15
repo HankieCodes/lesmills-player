@@ -162,6 +162,7 @@ h2 {
 }
 
 .message {
+  margin-bottom: 0;
   padding: 8px 12px;
   background: #3a2d12;
   border: 1px solid var(--low);
@@ -388,4 +389,143 @@ button.play {
   white-space: pre-wrap;
   color: #ff9aa8;
   font-family: ui-monospace, Consolas, monospace;
+}
+
+/* ---- workspace layout (no sidebar) ---- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.topbar h1 {
+  margin: 0 8px 0 0;
+  font-size: 16px;
+}
+
+.topbar .spacer {
+  flex: 1;
+}
+
+.app.dragging::after {
+  content: "Drop to add to the workspace";
+  position: fixed;
+  inset: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 3px dashed var(--primary);
+  border-radius: var(--radius);
+  background: rgba(15, 17, 21, 0.8);
+  font-size: 22px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.empty {
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.empty p {
+  max-width: 520px;
+  margin: 0;
+}
+
+.workspace {
+  flex: 1;
+  min-height: 0;
+}
+
+.badge-button {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.video-note.center {
+  top: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background: transparent;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.video-note.error {
+  color: #ff9aa8;
+}
+
+.video-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px 8px;
+  background: rgba(0, 0, 0, 0.7);
+  font-size: 12px;
+}
+
+.video-progress .progress {
+  width: 100%;
+}
+
+.track-list {
+  max-height: 40%;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.track-list table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.track-list th,
+.track-list td {
+  padding: 3px 8px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.track-list th {
+  position: sticky;
+  top: 0;
+  background: var(--card);
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.track-list td.name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gone {
+  color: var(--low);
+}
+
+button.tiny {
+  padding: 0 5px;
+  font-size: 10px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.tile-header select {
+  max-width: 200px;
+  padding: 2px 6px;
 }

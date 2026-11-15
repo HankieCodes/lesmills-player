@@ -1,6 +1,6 @@
 {
   "name": "lmsync",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "LM Sync \u2014 align Les Mills release MP3s to teaching videos via audio fingerprinting, then play masterclass + self videos and LRC choreography in sync.",
   "main": "out/electron/main.js",
   "type": "commonjs",

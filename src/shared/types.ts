@@ -2,28 +2,27 @@ export type VideoSource = "self" | "masterclass";
 
 export type AlignmentMethod = "chromaprint" | "cross-correlation";
 
-export interface AlignmentVideo {
-  source: VideoSource;
-  fileName: string;
-  filePath: string;
-  durationSec: number;
+export type MatchStatus = "ok" | "low" | "unmatched";
+
+/** A choreography track assembled from a user-supplied MP3 and/or LRC (paired by file name). */
+export interface Track {
+  /** Normalized file name stem; identity of the track across videos and workspaces. */
+  key: string;
+  /** From the leading digits of the file name, else the next free number in the order added. */
+  trackNo: number;
+  /** Stem as first seen, for display. */
+  label: string;
+  mp3Path: string | null;
+  lrcPath: string | null;
 }
 
-export interface ReleaseIdentity {
-  program: string;
-  release: string;
-}
-
-export interface TrackAlignment {
+export interface AlignmentTrack {
+  trackKey: string;
   trackNo: number;
   mp3Path: string;
-  lrcPath: string;
   /** Video time (sec) at which this track's audio begins. */
   videoStartSec: number;
-  /**
-   * Master/session time (sec) at which this track's MP3 timeline begins.
-   * The MP3 timeline is canonical for a session; track 1 typically starts at 0.
-   */
+  /** Offset into the MP3 at which the match begins; 0 = the MP3's own start. */
   mp3StartSec: number;
   /** 0..1 confidence of the alignment. */
   confidence: number;
@@ -31,17 +30,19 @@ export interface TrackAlignment {
 }
 
 export interface Alignment {
-  version: 1;
-  video: AlignmentVideo;
-  release: ReleaseIdentity;
-  tracks: TrackAlignment[];
+  version: 2;
+  video: {
+    fileName: string;
+    filePath: string;
+    durationSec: number;
+  };
+  tracks: AlignmentTrack[];
   generatedAt: string;
   alignerVersion: string;
 }
 
-export type MatchStatus = "ok" | "low" | "unmatched";
-
 export interface TrackMatchResult {
+  trackKey: string;
   trackNo: number;
   status: MatchStatus;
   videoStartSec: number | null;
@@ -52,7 +53,6 @@ export interface TrackMatchResult {
 
 export interface MatchReport {
   videoPath: string;
-  release: ReleaseIdentity;
   results: TrackMatchResult[];
 }
 
@@ -64,32 +64,21 @@ export interface LrcCue {
 export interface ParsedLrc {
   path: string;
   cues: LrcCue[];
-  /** Approximate end of the timed sequence (last cue time). */
+  /** Time of the last cue. */
   durationSec: number;
 }
 
-export interface ReleaseTrack {
+/** What the analyzer needs to know about a track: only the MP3 takes part in alignment. */
+export interface AnalyzeTrackInput {
+  trackKey: string;
   trackNo: number;
   mp3Path: string;
-  lrcPath: string;
 }
 
-export interface ReleaseFolder {
-  folderPath: string;
-  program: string;
-  release: string;
-  tracks: ReleaseTrack[];
-  masterclassVideoPath: string | null;
-}
-
-export interface ConfidenceSummary {
-  release: ReleaseIdentity;
-  videoSource: VideoSource;
-  videoFileName: string;
-  videoPath: string;
-  trackCount: number;
-  matchedCount: number;
-  lowConfidenceCount: number;
-  unmatchedCount: number;
-  averageConfidence: number | null;
+/** The workspace JSON file: just the files the user added. Everything else is derived. */
+export interface WorkspaceFile {
+  version: 2;
+  videos: Array<{ path: string; source: VideoSource }>;
+  mp3s: string[];
+  lrcs: string[];
 }

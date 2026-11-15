@@ -4,18 +4,25 @@ Aligns Les Mills release MP3s to recordings of a class being taught (and to mast
 
 ## Using it
 
-1. **Add release folder…** – pick a folder that contains release folders (`NN - name.mp3` with a same-named `NN - name.lrc`; e.g. `BODYPUMP 131/`). Folders are only read.
-2. Select the release in the sidebar.
-3. Choose whether the video is a *self-teaching recording* or a *masterclass*, then drop the video on the window or use **Open video…**. Matching runs one video at a time (progress shows in the new tile); results are cached by the video's SHA-256.
-4. The first video is the reference: the master clock runs on its timeline and every other video is mapped to it track by track through the MP3 timeline. Click a choreography line to seek all videos, use **Loop block** to repeat the current LRC block, ±5 s, previous/next track, and 0.5–1.25× speed. Each video shows a sync-confidence badge for the current track; tracks that could not be matched are left out, never guessed.
+Add any of these, in any order, by dropping them on the window or with **Add files…**:
 
-The loaded release and videos are restored on the next launch.
+- **Videos** (MP4, M4V, MOV, MKV, WebM, AVI, …) — play immediately. Until they can be aligned they play unsynchronized from 0:00 and are marked "not synced". Click a video's *Self* / *Masterclass* badge to change its type.
+- **MP3s** — the class's track audio. Once there are MP3s, every video is aligned to them automatically (one video at a time, progress at the bottom of its tile). Adding more MP3s later re-aligns videos, but only the new MP3s cost real work.
+- **LRC files** — the choreography text. An LRC is paired with the MP3 that has the same file name (`05 - Squats.lrc` ↔ `05 - Squats.mp3`), wherever the files live. Track numbers come from the leading digits of the name.
+
+The first video is the reference: the master clock runs on its timeline and every other video is mapped to it track by track through the MP3 timeline. Click a choreography line to seek all videos; **Loop block** repeats the current LRC block; there are ±5 s, previous/next track and 0.5–1.25× speed controls. The choreography tile's track table shows which MP3/LRC files are present and how each video matched each track (tracks that could not be matched are left out, never guessed).
+
+The workspace (just the list of files you added) auto-saves and reopens on the next launch. **New** clears it, **Open…** loads a workspace file and **Save copy…** writes one. Files are only ever read.
 
 ## How alignment works
 
-`ffmpeg` decodes the video and each MP3 to 11.025 kHz mono WAV; `fpcalc -raw` gives the Chromaprint fingerprint series (one 32-bit item per ~0.124 s). Four probe windows from each track are slid over the whole video; probes that agree on the implied track start vote for it, and confidence comes from the bit-error rate and probe agreement. A normalized envelope cross-correlation is the fallback. Offsets must increase from track to track and lie inside the video.
+`ffmpeg` decodes the video and each MP3 to 11.025 kHz mono WAV; `fpcalc -raw` gives the Chromaprint fingerprint series (one 32-bit item per ~0.124 s). Four probe windows from each track are slid over the whole video; probes that agree on the implied track start vote for it, and confidence comes from the bit-error rate and probe agreement. A normalized envelope cross-correlation is the fallback. Start times must increase from track to track and lie inside the video. Results are cached per (video, MP3) by content hash.
 
 Confidence thresholds (`src/analyzer/status.ts`: ≥ 0.6 ok, 0.3–0.6 low, below 0.3 omitted) are **not yet tuned on real classes**; the end-to-end test only covers synthetic audio.
+
+## Troubleshooting
+
+The app writes `%APPDATA%\lmsync\logs\main.log` (Linux: `~/.config/lmsync/logs/main.log`) with startup info, renderer console output and analysis errors. `F12` / `Ctrl+Shift+I` toggles DevTools; `--devtools` opens them at launch.
 
 ## Development
 
@@ -41,10 +48,10 @@ The zip is unpacked-and-run (`LM Sync.exe`); ffmpeg and fpcalc ship inside it. I
 ## Layout
 
 ```
-src/shared/    types shared by main, preload and renderer (alignment JSON contract)
+src/shared/    types, file classification, track pairing and workspace logic shared by main, preload and renderer
 src/analyzer/  LRC parser, fingerprint/correlation matching, Analyzer job (ffmpeg + fpcalc)
-src/cache/     SHA-256-keyed alignment and parsed-LRC cache in the Electron userData dir
+src/cache/     content-hash-keyed feature, match, alignment and LRC cache in the Electron userData dir
 src/sync/      master-clock mapping and drift correction (pure, tested)
-src/electron/  main process, preload bridge, release folder scanner
+src/electron/  main process, preload bridge, logging
 src/renderer/  React UI
 ```

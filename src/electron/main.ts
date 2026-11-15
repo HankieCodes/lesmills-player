@@ -1,12 +1,15 @@
 import { app, BrowserWindow, dialog, ipcMain, net, protocol } from "electron";
+import { promises as fs } from "fs";
 import * as path from "path";
 import { pathToFileURL } from "url";
 import { Analyzer, type AnalyzeInput } from "../analyzer/analyzer";
-import { clearCache, getCacheDir } from "../cache/cache";
+import { clearCache, getCacheDir, readJson, writeJson } from "../cache/cache";
+import { AUDIO_EXTENSIONS, LRC_EXTENSIONS, VIDEO_EXTENSIONS } from "../shared/files";
+import { parseWorkspace } from "../shared/workspace";
+import type { WorkspaceFile } from "../shared/types";
 import { log, logPath } from "./log";
-import { scanReleaseFolders } from "./releases";
 
-const MEDIA_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi", ".mp3"]);
+const MEDIA_EXTENSIONS = new Set([...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS]);
 const exe = process.platform === "win32" ? ".exe" : "";
 
 let mainWindow: BrowserWindow | null = null;
@@ -22,14 +25,21 @@ function binaryPath(name: "ffmpeg" | "fpcalc"): string {
   return process.platform === "win32" ? path.join(bundled, `${name}${exe}`) : name;
 }
 
-function createAnalyzer(): Analyzer {
-  return new Analyzer({
+let analyzer: Analyzer | null = null;
+function getAnalyzer(): Analyzer {
+  analyzer ??= new Analyzer({
     ffmpegPath: binaryPath("ffmpeg"),
     fpcalcPath: binaryPath("fpcalc"),
     cacheDir: getCacheDir(app.getPath("userData")),
     onProgress: (progress) => mainWindow?.webContents.send("lmsync:analyze-progress", progress),
   });
+  return analyzer;
 }
+
+const workingWorkspacePath = () => path.join(app.getPath("userData"), "workspace.json");
+
+const dotless = (extensions: string[]) => extensions.map((e) => e.slice(1));
+const WORKSPACE_FILTER = { name: "LM Sync workspace", extensions: ["json"] };
 
 function registerMediaProtocol(): void {
   protocol.handle("lmsync", (request) => {
@@ -95,25 +105,68 @@ function createWindow(): void {
 }
 
 function registerIpc(): void {
-  ipcMain.handle("lmsync:releases", (_event, folders: string[]) => scanReleaseFolders(folders));
+  const dialogFor = <T>(show: (parent: BrowserWindow | undefined) => Promise<T>) => show(mainWindow ?? undefined);
 
-  ipcMain.handle("lmsync:pickFolder", async () => {
-    const options: Electron.OpenDialogOptions = { properties: ["openDirectory"], title: "Choose a release folder" };
-    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
-    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
+  ipcMain.handle("lmsync:pickFiles", async () => {
+    const result = await dialogFor((parent) => {
+      const options: Electron.OpenDialogOptions = {
+        title: "Add videos, MP3s and LRC files",
+        properties: ["openFile", "multiSelections"],
+        filters: [
+          { name: "All supported files", extensions: dotless([...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS, ...LRC_EXTENSIONS]) },
+          { name: "Videos", extensions: dotless(VIDEO_EXTENSIONS) },
+          { name: "MP3 audio", extensions: dotless(AUDIO_EXTENSIONS) },
+          { name: "LRC choreography", extensions: dotless(LRC_EXTENSIONS) },
+          { name: "All files", extensions: ["*"] },
+        ],
+      };
+      return parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options);
+    });
+    return result.canceled ? [] : result.filePaths;
   });
+
+  ipcMain.handle("lmsync:exists", async (_event, paths: string[]) => {
+    const entries = await Promise.all(
+      paths.map(async (p) => [p, await fs.access(p).then(() => true, () => false)] as const),
+    );
+    return Object.fromEntries(entries);
+  });
+
+  ipcMain.handle("lmsync:lrc", (_event, lrcPath: string) => getAnalyzer().loadLrc(lrcPath));
 
   // One alignment job at a time (see PLAN §10).
   ipcMain.handle("lmsync:analyze", (_event, input: AnalyzeInput) => {
-    log("info", `analyze ${input.videoPath} against ${input.release.program} ${input.release.release}`);
-    const job = analysisQueue.then(() => createAnalyzer().analyzeVideo(input));
+    log("info", `analyze ${input.videoPath} against ${input.tracks.length} track(s)`);
+    const job = analysisQueue.then(() => getAnalyzer().analyzeVideo(input));
     analysisQueue = job.catch((error: unknown) => log("error", "analysis failed", error));
     return job;
   });
 
-  ipcMain.handle("lmsync:cache:clear", async () => {
-    await clearCache(getCacheDir(app.getPath("userData")));
+  ipcMain.handle("lmsync:workspace:load", async () => parseWorkspace(await readJson<unknown>(workingWorkspacePath())));
+  ipcMain.handle("lmsync:workspace:save", (_event, workspace: WorkspaceFile) => writeJson(workingWorkspacePath(), workspace));
+
+  ipcMain.handle("lmsync:workspace:open", async () => {
+    const options: Electron.OpenDialogOptions = { title: "Open workspace", properties: ["openFile"], filters: [WORKSPACE_FILTER] };
+    const result = await dialogFor((parent) => (parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options)));
+    if (result.canceled || result.filePaths.length === 0) return null;
+    const workspace = parseWorkspace(await readJson<unknown>(result.filePaths[0]));
+    if (workspace === null) throw new Error(`${path.basename(result.filePaths[0])} is not an LM Sync workspace file.`);
+    return { path: result.filePaths[0], workspace };
   });
+
+  ipcMain.handle("lmsync:workspace:saveAs", async (_event, workspace: WorkspaceFile) => {
+    const options: Electron.SaveDialogOptions = {
+      title: "Save a copy of the workspace",
+      defaultPath: "class.lmsync.json",
+      filters: [WORKSPACE_FILTER],
+    };
+    const result = await dialogFor((parent) => (parent ? dialog.showSaveDialog(parent, options) : dialog.showSaveDialog(options)));
+    if (result.canceled || !result.filePath) return null;
+    await writeJson(result.filePath, workspace);
+    return result.filePath;
+  });
+
+  ipcMain.handle("lmsync:cache:clear", () => clearCache(getCacheDir(app.getPath("userData"))));
 }
 
 process.on("uncaughtException", (error) => log("error", "uncaughtException", error));

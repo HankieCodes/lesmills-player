@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { elementTimeForTrack, findCurrentTrack, mp3TimeForTrack, planSync, targetForTile } from "./clock";
-import type { Alignment, TrackAlignment } from "../shared/types";
+import type { Alignment, AlignmentTrack } from "../shared/types";
 
-function track(trackNo: number, videoStartSec: number): TrackAlignment {
+function track(trackNo: number, videoStartSec: number): AlignmentTrack {
   return {
+    trackKey: `t${trackNo}`,
     trackNo,
     mp3Path: `/m/${trackNo}.mp3`,
-    lrcPath: `/m/${trackNo}.lrc`,
     videoStartSec,
     mp3StartSec: 0,
     confidence: 0.9,
@@ -14,14 +14,13 @@ function track(trackNo: number, videoStartSec: number): TrackAlignment {
   };
 }
 
-function alignment(source: "self" | "masterclass", tracks: TrackAlignment[]): Alignment {
+function alignment(tracks: AlignmentTrack[]): Alignment {
   return {
-    version: 1,
-    video: { source, fileName: "v.mp4", filePath: "/v.mp4", durationSec: 4000 },
-    release: { program: "BODYPUMP", release: "131" },
+    version: 2,
+    video: { fileName: "v.mp4", filePath: "/v.mp4", durationSec: 4000 },
     tracks,
     generatedAt: "2026-11-15T00:00:00.000Z",
-    alignerVersion: "0.2.0",
+    alignerVersion: "0.3.0",
   };
 }
 
@@ -34,7 +33,7 @@ describe("element / mp3 time mapping", () => {
 });
 
 describe("findCurrentTrack", () => {
-  const a = alignment("self", [track(1, 60), track(2, 400), track(3, 800)]);
+  const a = alignment([track(1, 60), track(2, 400), track(3, 800)]);
   it("returns null before the first track and the latest started track after", () => {
     expect(findCurrentTrack(a, 10)).toBeNull();
     expect(findCurrentTrack(a, 60)?.trackNo).toBe(1);
@@ -44,28 +43,33 @@ describe("findCurrentTrack", () => {
 });
 
 describe("targetForTile", () => {
-  const self = alignment("self", [track(1, 60), track(2, 400)]);
-  const master = alignment("masterclass", [track(1, 5), track(2, 300)]);
+  const self = alignment([track(1, 60), track(2, 400)]);
+  const master = alignment([track(1, 5), track(2, 300)]);
 
   it("is the identity for the reference video", () => {
-    expect(targetForTile(self, self, 100).targetSec).toBe(100);
+    const t = targetForTile(self, self, 100, true);
+    expect(t.targetSec).toBe(100);
+    expect(t.trackKey).toBe("t1");
+    expect(t.synced).toBe(true);
   });
 
   it("maps another video through the track's MP3 timeline", () => {
-    // self t=100 → track 1, mp3 time 40 → masterclass 5 + 40
-    const target = targetForTile(self, master, 100);
-    expect(target.trackNo).toBe(1);
+    const target = targetForTile(self, master, 100, false);
+    expect(target.trackKey).toBe("t1");
     expect(target.mp3TimeSec).toBeCloseTo(40);
     expect(target.targetSec).toBeCloseTo(45);
-  });
-
-  it("switches track together", () => {
-    expect(targetForTile(self, master, 410).targetSec).toBeCloseTo(310);
+    expect(targetForTile(self, master, 410, false).targetSec).toBeCloseTo(310);
   });
 
   it("returns null when the other video lacks the track", () => {
-    const partial = alignment("masterclass", [track(1, 5)]);
-    expect(targetForTile(self, partial, 410).targetSec).toBeNull();
+    expect(targetForTile(self, alignment([track(1, 5)]), 410, false).targetSec).toBeNull();
+  });
+
+  it("plays unaligned videos from 0:00 on the master clock, flagged as not synced", () => {
+    const none = alignment([]);
+    expect(targetForTile(self, none, 100, false)).toMatchObject({ targetSec: 100, synced: false });
+    expect(targetForTile(none, master, 100, false)).toMatchObject({ targetSec: 100, synced: false });
+    expect(targetForTile(null, null, 7, true)).toMatchObject({ targetSec: 7, synced: false, trackKey: null });
   });
 });
 

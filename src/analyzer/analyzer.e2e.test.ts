@@ -4,7 +4,7 @@ import * as os from "os";
 import * as path from "path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Analyzer } from "./analyzer";
-import type { ReleaseFolder } from "../shared/types";
+import type { AnalyzeTrackInput } from "../shared/types";
 
 /**
  * End-to-end alignment test on synthetic audio. Needs real ffmpeg + fpcalc:
@@ -97,28 +97,21 @@ function writeWav(file: string, samples: Float32Array): void {
 describe.skipIf(!ffmpeg || !fpcalc)("Analyzer end-to-end (synthetic audio)", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lmsync-e2e-"));
   const cacheDir = path.join(dir, "cache");
-  const releaseDir = path.join(dir, "BODYPUMP 131");
+  const releaseDir = path.join(dir, "tracks");
   const videoPath = path.join(dir, "class.mp4");
   const TRACK_SEC = 40;
   // Where each track starts in the video (seconds), by construction.
   const starts = { 1: 12.4, 2: 70.9, 4: 140.2 };
-  let release: ReleaseFolder;
+  let trackInputs: AnalyzeTrackInput[];
 
   beforeAll(() => {
     fs.mkdirSync(releaseDir, { recursive: true });
     const tracks = [1, 2, 3, 4].map((n) => synthTrack(TRACK_SEC, 1000 + n));
-    release = {
-      folderPath: releaseDir,
-      program: "BODYPUMP",
-      release: "131",
-      masterclassVideoPath: null,
-      tracks: tracks.map((samples, i) => {
-        const base = path.join(releaseDir, `0${i + 1} - Track`);
-        writeWav(`${base}.wav`, samples);
-        fs.writeFileSync(`${base}.lrc`, "[00:01.00] go\n[00:10.00] more\n");
-        return { trackNo: i + 1, mp3Path: `${base}.wav`, lrcPath: `${base}.lrc` };
-      }),
-    };
+    trackInputs = tracks.map((samples, i) => {
+      const mp3Path = path.join(releaseDir, `0${i + 1} - Track.wav`);
+      writeWav(mp3Path, samples);
+      return { trackKey: `0${i + 1} - track`, trackNo: i + 1, mp3Path };
+    });
 
     // Class recording: talking noise, tracks 1, 2 and 4 (3 is skipped), room noise + "voice-over" over everything.
     const parts: Float32Array[] = [];
@@ -144,28 +137,29 @@ describe.skipIf(!ffmpeg || !fpcalc)("Analyzer end-to-end (synthetic audio)", () 
 
   afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  it("aligns each present track within ±0.5 s and omits the skipped one", async () => {
+  it("aligns present tracks within ±0.5 s, omits the skipped one, and only analyzes new MP3s on re-run", async () => {
     const analyzer = new Analyzer({ ffmpegPath: ffmpeg, fpcalcPath: fpcalc, cacheDir });
-    const input = {
-      videoPath,
-      source: "self" as const,
-      fileName: "class.mp4",
-      release: { program: "BODYPUMP", release: "131" },
-      releaseFolder: release,
-    };
-    const result = await analyzer.analyzeVideo(input);
-    const byNo = new Map(result.alignment.tracks.map((t) => [t.trackNo, t]));
-    console.log(JSON.stringify(result.matchReport.results, null, 1));
+    const base = { videoPath, fileName: "class.mp4" };
 
+    // Only tracks 1 and 3 are known at first (3 is not in the video).
+    const first = await analyzer.analyzeVideo({ ...base, tracks: [trackInputs[0], trackInputs[2]] });
+    expect(first.alignment.tracks.map((t) => t.trackNo)).toEqual([1]);
+    expect(first.cachedTracks).toBe(0);
+
+    // More MP3s arrive: the two already-known tracks come from the cache.
+    const second = await analyzer.analyzeVideo({ ...base, tracks: trackInputs });
+    expect(second.cachedTracks).toBe(2);
+    console.log(JSON.stringify(second.matchReport.results, null, 1));
+    const byNo = new Map(second.alignment.tracks.map((t) => [t.trackNo, t]));
     for (const [n, start] of Object.entries(starts)) {
       const track = byNo.get(Number(n));
       expect(track, `track ${n} matched`).toBeDefined();
       expect(Math.abs(track!.videoStartSec - start)).toBeLessThan(0.5);
     }
     expect(byNo.has(3)).toBe(false);
-    expect(Object.keys(result.lrcs)).toHaveLength(3);
+    expect(second.matchReport.results.find((r) => r.trackNo === 3)?.status).toBe("unmatched");
 
-    const again = await analyzer.analyzeVideo(input);
-    expect(again.cached).toBe(true);
+    const third = await analyzer.analyzeVideo({ ...base, tracks: trackInputs });
+    expect(third.cachedTracks).toBe(4);
   }, 240_000);
 });

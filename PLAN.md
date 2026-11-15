@@ -11,13 +11,13 @@
 | Piece | State |
 |---|---|
 | Choreography → timed lines | **LM Lyrics** (lmlyrics.brekke-peer.com) already converts choreography PDFs into one `.lrc` per track. Converts are ephemeral (deleted after download / 15 min) and it has no public API. **This project consumes its output files; it does not integrate with the service.** Note: lmlyrics does NOT run on the homelab host (no container) — it's hosted elsewhere. |
-| Track MP3s | Local files (Les Mills Connect rips; previously in Jellyfin — now user-selected local files). |
-| LRC files | **Assumption to verify in Phase 0:** the downloaded `.lrc` files live beside the MP3s in the source media folder (same basename), which is how they were consumed alongside the track MP3s — the consumption pattern LM Lyrics advertises. |
-| Masterclass videos | Local video files (previously in Jellyfin — now user-selected local files). |
+| Track MP3s | Local files (Les Mills Connect rips), added individually by the user — no folder or library structure is assumed. |
+| LRC files | Local files downloaded from LM Lyrics, added individually. They are paired with MP3s **by file name** (§4.2); they do not need to live in the same folder. |
+| Masterclass videos | Local video files, added individually. |
 | Self-teaching videos | Local library / user-selected local files (previously in Immich — phone uploads). |
 | LRC format emitted by LM Lyrics | Standard `[mm:ss.cc]` timestamps, **relative to the track MP3's own timeline**, one cue per line (rep counts + move name + lyric fragment in parentheses). No metadata tags were visible in public examples — verify against a real file in Phase 0. |
 
-**v1 source model (updated post-web-app pivot):** all content is **local files** — choreography `.lrc`, track MP3s, masterclass/self videos — selected by the user in the desktop app via drag-and-drop / native file pickers. Remote connectors (e.g. Jellyfin) are future-phase only.
+**v1 source model:** all content is **local files** — choreography `.lrc`, track MP3s, masterclass/self videos — added by the user in the desktop app via drag-and-drop onto the window or a native multi-select file picker. There are no release folders and no sidebar: any supported file can be added at any time, in any order. Remote connectors (e.g. Jellyfin) are future-phase only.
 
 ## 2. Verified environment (Dockhand, Nov 8, 2026)
 
@@ -43,11 +43,11 @@ lmsync (Electron app, desktop)
 └── cache    Electron user data dir (Linux: `~/.config/lmsync`, macOS: `~/Library/Application Support/lmsync`, Windows: `%APPDATA%\lmsync`) — analyzed-content cache + alignment JSONs + SQLite index
 ```
 
-- v1 media sources: **local files** the user selects — choreography `.lrc`, track MP3s, masterclass/self videos — via drag-and-drop drop zones or native file pickers. Accessed read-only through Electron `fs`.
+- v1 media sources: **local files** the user adds — choreography `.lrc`, track MP3s, masterclass/self videos — by dropping them anywhere on the window or via **Add files…** (native picker; accepts MP4, M4V, MOV, MKV, WebM, AVI, WMV, MPG, TS, 3GP, FLV, MP3, LRC). Accessed read-only through Electron `fs`.
 - Immich (self-videos): reachable via the Immich API (`http://immich:2283/api`, header `x-api-key`) or local library path, read-only, from inside the desktop app.
 - No Docker/Traefik/Cloudflare Access layer for v1: the desktop app authenticates via the OS user session. The planned `lmsync` Dockhand stack, Traefik labels and Access policy are superseded.
 
-**Analyzer/UI separation:** the analyzer is a standalone module behind a stable interface — given a video file + release folder, produce the alignment JSON (§4.1) + match report. The Electron UI talks to it over IPC today; if the analyzer later moves to a NodeJS server in the cloud, only the transport behind that interface changes. C++ libraries via Node C bindings (N-API) may be used for native audio processing later; fpcalc/Chromaprint stays the local v1 path.
+**Analyzer/UI separation:** the analyzer is a standalone module behind a stable interface — given a video file + a list of MP3 tracks, produce the alignment JSON (§4.1) + match report. The Electron UI talks to it over IPC today; if the analyzer later moves to a NodeJS server in the cloud, only the transport behind that interface changes. C++ libraries via Node C bindings (N-API) may be used for native audio processing later; fpcalc/Chromaprint stays the local v1 path.
 
 ## 4. Core idea / data model
 
@@ -58,23 +58,21 @@ Everything hangs off one fact: **LRC timestamps are relative to the track MP3**.
 
 ### 4.1 Alignment output (the contract everything else consumes)
 
-One JSON per (video, release), stored in the cache dir's `alignments/` folder:
+One JSON per video, rebuilt on every analysis and stored in the cache dir's `cache/alignments/` folder. It lists only the tracks that matched; its contents depend on which MP3s were available when it was built.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "video": {
-    "source": "self" | "masterclass",
     "fileName": "2026-11-05_bodypump.mp4",
-    "filePath": "/home/hank/Videos/…",
+    "filePath": "C:\\Users\\…\\2026-11-05_bodypump.mp4",
     "durationSec": 3721.4
   },
-  "release": { "program": "BODYPUMP", "release": "131" },
   "tracks": [
     {
+      "trackKey": "01 - warmup",
       "trackNo": 1,
-      "mp3Path": "/…/01 - Warmup.mp3",
-      "lrcPath": "/…/01 - Warmup.lrc",
+      "mp3Path": "C:\\…\\01 - Warmup.mp3",
       "videoStartSec": 62.31,
       "mp3StartSec": 0.0,
       "confidence": 0.93,
@@ -82,34 +80,50 @@ One JSON per (video, release), stored in the cache dir's `alignments/` folder:
     }
   ],
   "generatedAt": "2026-11-08T…",
-  "alignerVersion": "0.1.0"
+  "alignerVersion": "0.3.0"
 }
 ```
 
-Masterclass alignments are the same shape with `"source": "masterclass"` and a local file path instead of an asset ID. Unmatched tracks are **omitted and logged**, never guessed.
+`trackKey` is the normalized file-name stem and is the identity that joins an MP3, its LRC and every video's alignment. Whether a video is a *self* recording or a *masterclass* is a label stored in the workspace (§6.1), not in the alignment. Unmatched tracks are **omitted and reported**, never guessed.
 
-### 4.2 Library conventions (verify/adjust in Phase 0)
+### 4.2 Tracks, pairing and the workspace file
 
-- A *release folder* in the source media folder(s) contains: one MP3 per track, one same-named `.lrc` per track, and optionally one masterclass video file.
-- Track number comes from filename ordering (leading digits). Program/release parsed from folder name; keep a manual override map in the cache dir's `config.json` for folders that don't parse.
+- A **track** is identified by its file-name stem (case-insensitive, whitespace-normalized). `05 - Squats.mp3` and `05 - Squats.lrc` are the same track wherever they live on disk.
+- The **track number** is the leading digits of the stem; files without one get the next free number in the order added. Tracks sort by number.
+- A track exists as soon as **either** file is present. MP3 only: it aligns the videos but shows no choreography text. LRC only: it shows text but cannot be aligned yet.
+- The **workspace** is a JSON file listing only what the user added; everything else is derived:
+
+```json
+{ "version": 2, "videos": [{ "path": "…", "source": "self" | "masterclass" }], "mp3s": ["…"], "lrcs": ["…"] }
+```
 
 ### 4.3 Analyzed-content cache (v1)
 
-- Analyzed content (alignment JSONs + parsed LRCs + indexer state) is saved in the **cache folder** = the Electron user data dir for the app (Linux: `~/.config/lmsync`, macOS: `~/Library/Application Support/lmsync`, Windows: `%APPDATA%\lmsync`).
-- Cache key: **SHA-256** hash of the analyzed media file's contents (plus release identity). Re-selecting the same file (by hash) → cache hit → reuse the cached alignment/LRC; no re-analysis.
-- Alignment runs remain idempotent (keyed by file hash + aligner version).
+Everything derived lives under `cache/` in the Electron user data dir (Linux `~/.config/lmsync`, macOS `~/Library/Application Support/lmsync`, Windows `%APPDATA%\\lmsync`). Entries are named only from SHA-256 digests and the aligner version, so names are valid on every OS.
+
+- `hashes.json` — file SHA-256 remembered by path + size + mtime, so a large video is hashed once.
+- `features/<sha>__<ver>.json` — fingerprint series + energy envelope of a video soundtrack or an MP3.
+- `matches/<videoSha>__<mp3Sha>__<ver>.json` — the result of matching one MP3 against one video, **including "no match"**.
+- `alignments/<videoSha>__<ver>.json` — the assembled alignment JSON (§4.1).
+- `lrcs/<lrcSha>.json` — parsed LRC.
+
+Because matches are cached per (video, MP3), adding one MP3 to a workspace only costs that MP3; renamed or moved files hit the cache by content hash. Bumping the aligner version invalidates everything. The workspace itself auto-saves to `workspace.json` in the user data dir.
+
+---
 
 ## 5. Alignment algorithm (analyzer module)
 
 Runs inside the Electron main process for v1 (or as a subprocess of it); the module boundary is what allows it to later move to a NodeJS server in the cloud. C++ libraries via Node C bindings (N-API) may be used for native audio processing later; fpcalc/Chromaprint stays the local v1 path.
 
-Per video, per release:
+Per video, for each MP3 track in the workspace:
 
-1. Extract video audio: `ffmpeg -vn -ac 1 -ar 44100` to a temp WAV (mono is fine for fpcalc).
-2. For each track MP3 in the release: `fpcalc -json` on the MP3 and on the video audio; run a sliding fingerprint match (Chromaprint raw fingerprints, hamming-distance alignment — e.g. adapt the approach used by `fpcalc`-based aligners / `chromaprint` Python bindings; do **not** use the AcoustID web service, this is fully local).
-3. Record the best offset per track with its match score → `confidence`. Accept ≥ a threshold tuned in Phase 1 (start at the PoC's observed separation between true and false matches); below threshold, try the fallback; still below, omit + log.
-4. **Fallback:** FFT cross-correlation of downsampled mono envelopes (numpy/scipy) for any track Chromaprint misses.
-5. Sanity checks before writing JSON: track offsets strictly increasing; no two tracks claim overlapping spans (beyond crossfade tolerance ~10 s); each offset within video duration.
+1. Decode the video's audio and the MP3 to 11.025 kHz mono WAV with `ffmpeg` (once each; cached as *features*).
+2. `fpcalc -json -raw -length 0` gives the Chromaprint raw fingerprint **series** (one 32-bit item ≈ every 0.124 s) for the whole video and for the MP3. Do **not** use the AcoustID web service; this is fully local.
+3. Take four probe windows (~20 s) spread across the MP3 and slide each over the whole video, minimizing bit-error rate. Probes that agree on the implied track start vote for it; the winning start is scored over the whole overlap. `confidence` combines the best probe's bit-error rate with probe agreement.
+4. **Fallback:** Pearson-normalized cross-correlation of the 4 Hz energy envelopes, accepted only at a higher confidence.
+5. Sanity checks when assembling the alignment: tracks (in track-number order) must have strictly increasing starts, and each start must lie inside the video (≤ ~10 s before 0 is clamped). Violations are omitted with a reason.
+
+Confidence bands (`src/analyzer/status.ts`): ≥ 0.6 ok, 0.3–0.6 low (shown as a warning), < 0.3 unmatched. **Not yet tuned on real classes** (Phase 1 acceptance).
 
 Known wrinkles, by design:
 
@@ -120,25 +134,23 @@ Known wrinkles, by design:
 
 ## 6. The player (Electron app)
 
-Desktop app (Electron main process + React renderer); one *session* = (release, self video, masterclass video) with their alignment JSONs + the release's LRC set.
+Desktop app (Electron main process + React renderer); one *session* = the current workspace: its videos, with their alignment JSONs, plus the pooled MP3/LRC tracks.
 
-- **Transport model:** a virtual master clock. Each media element's target time = its current track's `videoStartSec + (masterTime − trackMp3Start)`. The MP3 timeline is the canonical timeline for a session (LRC is native to it).
+- **Transport model:** a virtual master clock running on the **reference video's** timeline (the first video in the workspace). For any other video the target time is found through the MP3 timeline: reference time → track + MP3 time (`t = refTime − ref.videoStartSec`) → `video.videoStartSec + t`. LRC cues are native to the MP3 timeline. A video with no alignment (or any video when the reference has none) is **not synchronized**: it plays on the master clock from its own 0:00 and is flagged "not synced". When the reference has no alignment the choreography tile previews a chosen track against the video's time, labelled "not synced".
 - **Sync loop:** `requestAnimationFrame`; if a playing video is > 0.30 s off target, hard-seek; if 0.08–0.30 s off, nudge `playbackRate` (0.95/1.05) until it converges. Pause/play/seek applies to all panes together.
-- **Layout:** masterclass video and self video side by side (stacked on narrow screens), choreography pane listing the current track's LRC lines with the active line highlighted and auto-scrolling; lines are **clickable → seek all panes** to that cue.
+- **Layout:** one strict grid of tiles — a tile per video plus the choreography tile — with no sidebar. The choreography tile lists the current track's LRC lines (active line highlighted, auto-scrolling; lines are **clickable → seek all panes** to that cue) and, below, the pooled track list: per track the MP3 / LRC present or missing, a remove button for each file, and each video's match status.
 - **Coaching controls:** track quick-jump (prev/next), loop current LRC block (between this line's timestamp and the next), ±5 s skip, playback speed (0.5/0.75/1/1.25), a per-track confidence badge (from alignment JSON) so Hank knows which syncs to distrust.
 - **Media serving:** the app plays user-selected local files directly (Electron `<video>` playback; use a custom `lmsync://` asset protocol in the main process when serving Immich originals through the API instead of local paths). **Codec caveat:** phone videos may be HEVC — Safari plays it, Chrome largely doesn't. If Phase 0 confirms HEVC self-videos, the analyzer pre-generates 720p H.264 proxies into the cache dir (proxies only for self-videos, ~a few hundred MB each, with a config cap) and the player prefers the proxy for the self pane.
 
-- **Source selection (v1):** content comes from local files via drag-and-drop onto drop zones or native file pickers — video drop zone (MOV/MP4) with an in-zone **Open…** button → `dialog.showOpenDialog` filtered to video; LRC drop zone with **Open…** → filtered to LRC; MP3 drop zone with **Open…** → filtered to MP3. Dropped paths are resolved via `webUtils.getPathForFile` (contextBridge) → IPC to main/analyzer.
-- **Cache:** analyzed content is saved to the cache folder, keyed by SHA-256 (§4.3), and reused when the same file is selected again.
-- **Session picker:** list indexed releases; for each, which self/masterclass alignments exist and their per-track confidence summary.
+- **Adding files (v1):** drop any supported file anywhere on the window, or use **Add files…** (native multi-select dialog, filters for all supported / videos / MP3 / LRC / all files). Dropped paths are resolved with `webUtils.getPathForFile` in the preload. Videos accept MP4, M4V, MOV, MKV, WebM, AVI, WMV, MPG/MPEG, TS, 3GP and FLV (playback still depends on Chromium codecs; alignment only needs the audio to decode).
+- **Cache:** analyzed content is saved to the cache folder, keyed by SHA-256 (§4.3), and reused when the same files are added again.
 
 ### 6.1 Workspace & tiles (v1)
 
-- A *workspace* = the saved tile arrangement + which files are loaded. Saved automatically with any change; on launch the app reopens the last workspace or starts a new empty one.
-- Tile types: **video tiles** (one per MOV — masterclass/self) placed in a **strict grid**; plus one **LRC scroller tile** holding the pooled MP3/LRC choreography content.
-- Adding content: dragging a MOV in tiles it as a video tile; dragging/adding MP3/LRC content pools it into the single LRC scroller tile. Typical sessions: self + masterclass MOVs + LRC scroller, or just self MOV + LRC scroller.
-- Layout: strict grid (tiles snap to grid; rearrange = reorder/resize within grid).
-- Analysis: when a MOV is dropped into a workspace that has the LRC/MP3 set, analysis auto-runs against the pooled LRC set; progress bar at the bottom of the video tile being analyzed. MP3/LRC-only input needs no analysis.
+- A *workspace* is the JSON file described in §4.2: the videos (each labelled *self* or *masterclass*, default *self*, toggled by clicking the badge on its tile), MP3 paths and LRC paths. It is saved automatically on every change to `workspace.json` in the user data dir and reopened on launch. **New** clears it, **Open…** loads a workspace file, **Save copy…** writes one anywhere. Files that have gone missing stay listed and are flagged; they are never analyzed.
+- Tile types: **video tiles** (one per video) and one **choreography tile** holding the pooled MP3/LRC tracks, in a strict grid.
+- Any file can be added at any time. Videos are playable immediately; with no MP3s they play unsynchronized from 0:00.
+- **Analysis is automatic and incremental:** whenever the set of MP3s changes (or a video is added), every video whose alignment was built for a different MP3 set is re-analyzed. Jobs run one at a time; a progress bar and message show at the bottom of the video tile being analyzed. Because results are cached per (video, MP3) (§4.3), only new MP3s cost real work. MP3/LRC-only changes never need user action.
 
 ### 6.2 Transport controls (v1)
 
@@ -149,32 +161,34 @@ Desktop app (Electron main process + React renderer); one *session* = (release, 
 
 No HTTP API in v1 — the Electron main process exposes an internal IPC surface between renderer and main/analyzer.
 
-- `lmsync:releases` — scan source media folder(s) for releases with tracks + LRCs (+ optional masterclass video)
-- `lmsync:analyze` `{videoPath, releaseFolder}` — run alignment job (main → analyzer module); returns alignment JSON + match report
-- `lmsync:alignment` / `lmsync:lrc` — get cached alignment JSON / parsed LRC lines `[{timeSec, text}]`
-- Media: user-picked local files played directly; Immich originals via API/local path as before.
+- `lmsync:analyze` `{videoPath, fileName, tracks: [{trackKey, trackNo, mp3Path}]}` — run the alignment job (main → analyzer module, serialized); returns alignment JSON + match report; progress is pushed on `lmsync:analyze-progress`
+- `lmsync:lrc` `path` — parsed LRC `{cues: [{timeSec, text}]}`
+- `lmsync:pickFiles` — native multi-select dialog; `lmsync:exists` — which paths still exist
+- `lmsync:workspace:load` / `:save` — the auto-saved working workspace; `:open` / `:saveAs` — workspace files chosen by the user
+- `lmsync:cache:clear`
+- Media: user-added local files are played through a `lmsync://` protocol handler that supports Range requests (needed for seeking).
 
 Auth: none in-app — the desktop app authenticates via the OS user session. No public routes.
 
 ## 8. Phases
 
 **Phase 0 — Verify assumptions (no code beyond scripts)**
-- [ ] Confirm `.lrc` files exist beside MP3s in the source media folder(s); capture one real `.lrc` and one release folder listing as fixtures (naming, metadata tags, track ordering).
-- [ ] Confirm masterclass video location/format in the source media folder(s).
+- [ ] Capture one real `.lrc` and a set of real MP3 file names as fixtures (naming, metadata tags, track numbering) to confirm the pairing rules in §4.2.
+- [ ] Confirm masterclass video formats/codecs.
 - [ ] Identify one recorded self-teaching video + its release; confirm the local source (user-picked file / Immich library path) is usable in the Electron app.
 - [ ] Check self-video codec (`ffprobe`): H.264 vs HEVC → decides the proxy question in §6.
 - [ ] Decide distribution: which OS should the Phase 5 Electron build ship first? (see §9 Q4)
 
 **Phase 1 — Alignment proof of concept (analyzer module)**
-- [ ] Analyzer module: given (video file, release folder) → alignment JSON per §4.1 + a match report.
+- [x] Analyzer module: given (video file, MP3 tracks) → alignment JSON per §4.1 + a match report (verified on synthetic audio through AAC with noise; real classes still to do).
 - [ ] **Acceptance:** on Hank's sample class, ≥ 90 % of tracks align at high confidence, and spot-checked offsets (3 tracks × start/middle cue) land within ±0.5 s of the LRC cue heard in the video. If Chromaprint underperforms, evaluate the cross-correlation fallback as primary *before* proceeding — do not build the UI on an unproven aligner.
 
 **Phase 2 — Indexer + job runner**
-- [ ] Index source media folders + selected videos into the cache-dir SQLite; alignment jobs queue + run one-at-a-time with memory limits; re-run is idempotent (keyed by file hash + aligner version).
+- [x] Alignment jobs queue + run one-at-a-time; re-runs are idempotent and incremental (per-(video, MP3) cache keyed by content hashes + aligner version, §4.3). A SQLite index is no longer needed in v1.
 
-**Phase 3 — Analyzer module interface + Electron IPC** per §7, with fixture tests for the LRC parser (real file from Phase 0) and the alignment-JSON schema.
+**Phase 3 — Analyzer module interface + Electron IPC** per §7, with fixture tests for the LRC parser (real file from Phase 0), track pairing and the workspace file.
 
-**Phase 4 — Player** per §6. Acceptance: a full class session plays with both videos + choreography staying in sync end-to-end (drift check at final track: active LRC line matches audio within ~0.5 s), click-to-seek and block-loop work. Workspace save/reopen (tiles + files) works (§6.1).
+**Phase 4 — Player** per §6. Acceptance: a full class session plays with both videos + choreography staying in sync end-to-end (drift check at final track: active LRC line matches audio within ~0.5 s), click-to-seek and block-loop work. Workspace auto-save/reopen and Open / Save copy work (§6.1).
 
 **Phase 5 — Package the Electron desktop app**
 - [ ] Electron main process + React renderer; bundle via electron-builder; installers for Windows (first target), macOS, Linux.
@@ -182,10 +196,12 @@ Auth: none in-app — the desktop app authenticates via the OS user session. No 
 
 ## 9. Open questions for Hank
 
-1. Where do the downloaded `.lrc` files actually live today — beside the MP3s in the source media folder, or somewhere else? (Phase 0 answers this if they're in the source folder; if not, where?)
-2. How are masterclass videos organized in the source media folder(s) — same folder as the release's MP3s, or a separate folder?
-3. Self-video identification: will you tag/album teaching videos in the local library, or should the selector treat "long videos not in a release" as candidates for manual release assignment in the UI? (Plan assumes: candidate list + manual release pick at align time.)
-4. Desktop packaging: which OS should the Phase 5 Electron build ship first (Windows suggested)?
+1. ~~Where do the `.lrc` files live / how are masterclass videos organized?~~ Superseded: files are added individually; pairing is by file name (§4.2).
+2. Self-video identification: videos start as *self*; click the badge to mark one *masterclass*. (Superseded the earlier "candidate list + manual release pick" idea.)
+3. Do your real MP3 and LRC file names pair by identical stem? If LM Lyrics names its LRCs differently from the MP3s, the pairing rule needs adjusting.
+4. Desktop packaging: Windows zip first (an NSIS installer needs Wine to cross-build on Linux); macOS/Linux builds later.
+
+---
 
 ## 10. Risks & non-goals
 

@@ -3,30 +3,30 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import {
-  alignmentCacheKey,
-  readAlignment,
+  cachedSha256,
+  readFeatures,
+  readMatch,
   readParsedLrc,
-  sha256File,
   writeAlignment,
+  writeFeatures,
+  writeMatch,
   writeParsedLrc,
+  type AudioFeatures,
+  type TrackMatchRecord,
 } from "../cache/cache";
 import { crossCorrelation, matchFingerprintSeries } from "./align";
 import { parseLrc } from "./lrc";
 import { CROSSFADE_TOLERANCE_SEC, GOOD_CONFIDENCE, MIN_CONFIDENCE, statusForConfidence } from "./status";
 import type {
   Alignment,
-  AlignmentMethod,
+  AlignmentTrack,
+  AnalyzeTrackInput,
   MatchReport,
-  MatchStatus,
   ParsedLrc,
-  ReleaseFolder,
-  ReleaseIdentity,
-  TrackAlignment,
   TrackMatchResult,
-  VideoSource,
 } from "../shared/types";
 
-export const ALIGNER_VERSION = "0.2.0";
+export const ALIGNER_VERSION = "0.3.0";
 
 const WAV_RATE = 11025;
 const ENVELOPE_FRAME_SAMPLES = 2756;
@@ -34,14 +34,13 @@ const ENVELOPE_FRAME_SEC = ENVELOPE_FRAME_SAMPLES / WAV_RATE;
 
 export interface AnalyzeInput {
   videoPath: string;
-  source: VideoSource;
   fileName: string;
-  release: ReleaseIdentity;
-  releaseFolder: ReleaseFolder;
+  /** Tracks that have an MP3. Order does not matter. */
+  tracks: AnalyzeTrackInput[];
 }
 
 export interface AnalyzeProgress {
-  phase: "hashing" | "decoding-video" | "track" | "done";
+  videoPath: string;
   message: string;
   /** 0..1 */
   fraction: number;
@@ -50,9 +49,8 @@ export interface AnalyzeProgress {
 export interface AnalyzeOutput {
   alignment: Alignment;
   matchReport: MatchReport;
-  cached: boolean;
-  /** Parsed LRC per trackNo for every track present in the alignment. */
-  lrcs: Record<number, ParsedLrc>;
+  /** How many tracks were answered from the cache without touching the audio. */
+  cachedTracks: number;
 }
 
 export interface AnalyzerOptions {
@@ -108,12 +106,11 @@ async function wavDataRange(handle: fs.promises.FileHandle): Promise<{ start: nu
 }
 
 /** Stream a mono 16-bit WAV and reduce it to a mean-absolute-amplitude envelope. */
-async function wavEnvelope(wavPath: string): Promise<{ envelope: Float32Array; durationSec: number }> {
+async function wavEnvelope(wavPath: string): Promise<{ envelope: number[]; durationSec: number }> {
   const handle = await fs.promises.open(wavPath, "r");
   try {
     const stat = await handle.stat();
     const { start, length } = await wavDataRange(handle);
-    // ffmpeg writing to a file leaves the data size as 0xFFFFFFFF-ish when it cannot seek; clamp to file size.
     const dataBytes = Math.min(length, stat.size - start);
     const totalSamples = Math.floor(dataBytes / 2);
     const frames = Math.ceil(totalSamples / ENVELOPE_FRAME_SAMPLES);
@@ -131,31 +128,14 @@ async function wavEnvelope(wavPath: string): Promise<{ envelope: Float32Array; d
       }
     }
     for (let f = 0; f < frames; f++) envelope[f] /= ENVELOPE_FRAME_SAMPLES;
-    return { envelope, durationSec: totalSamples / WAV_RATE };
+    return { envelope: Array.from(envelope, (v) => Math.round(v * 1e5) / 1e5), durationSec: totalSamples / WAV_RATE };
   } finally {
     await handle.close();
   }
 }
 
-function matchResult(
-  trackNo: number,
-  status: MatchStatus,
-  videoStartSec: number | null,
-  confidence: number | null,
-  method: AlignmentMethod | null,
-  reason: string,
-): TrackMatchResult {
-  return { trackNo, status, videoStartSec, confidence, method, reason };
-}
-
-function reportFromAlignment(alignment: Alignment): MatchReport {
-  return {
-    videoPath: alignment.video.filePath,
-    release: alignment.release,
-    results: alignment.tracks.map((t) =>
-      matchResult(t.trackNo, statusForConfidence(t.confidence), t.videoStartSec, t.confidence, t.method, "cached"),
-    ),
-  };
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export class Analyzer {
@@ -175,19 +155,12 @@ export class Analyzer {
     this.onProgress = options.onProgress ?? (() => undefined);
   }
 
-  async getAlignment(key: string): Promise<Alignment | null> {
-    return readAlignment(key, this.cacheDir);
-  }
-
-  async getParsedLrcBySha256(lrcSha256: string): Promise<ParsedLrc | null> {
-    return readParsedLrc(lrcSha256, this.cacheDir);
-  }
-
+  /** Parsed LRC for a file, cached by content hash. */
   async loadLrc(lrcPath: string): Promise<ParsedLrc | null> {
     try {
-      const digest = await sha256File(lrcPath);
+      const digest = await cachedSha256(lrcPath, this.cacheDir);
       const cached = await readParsedLrc(digest, this.cacheDir);
-      if (cached !== null) return cached;
+      if (cached !== null) return { ...cached, path: lrcPath };
       const parsed = parseLrc(await fs.promises.readFile(lrcPath, "utf8"), lrcPath);
       await writeParsedLrc(digest, parsed, this.cacheDir);
       return parsed;
@@ -230,132 +203,139 @@ export class Analyzer {
     return parsed.fingerprint;
   }
 
-  async analyzeVideo(input: AnalyzeInput): Promise<AnalyzeOutput> {
-    this.onProgress({ phase: "hashing", message: "Hashing video…", fraction: 0 });
-    const videoSha256 = await sha256File(input.videoPath);
-    const key = alignmentCacheKey(videoSha256, input.release, this.alignerVersion);
-    const cached = await readAlignment(key, this.cacheDir);
-    if (cached !== null) {
-      this.onProgress({ phase: "done", message: "Loaded from cache", fraction: 1 });
-      return {
-        alignment: cached,
-        matchReport: reportFromAlignment(cached),
-        cached: true,
-        lrcs: await this.lrcsFor(cached.tracks),
-      };
+  /** Features of a video soundtrack or MP3, from the cache when possible. */
+  private async features(inputPath: string, sha: string, tempDir: string): Promise<AudioFeatures> {
+    const cached = await readFeatures(sha, this.alignerVersion, this.cacheDir);
+    if (cached !== null) return cached;
+    const wav = path.join(tempDir, `${sha}.wav`);
+    await this.decodeToWav(inputPath, wav);
+    try {
+      const fingerprint = await this.fingerprint(wav);
+      const { envelope, durationSec } = await wavEnvelope(wav);
+      const features: AudioFeatures = { durationSec, fingerprint, envelope, envelopeFrameSec: ENVELOPE_FRAME_SEC };
+      await writeFeatures(sha, this.alignerVersion, features, this.cacheDir);
+      return features;
+    } finally {
+      await fs.promises.rm(wav, { force: true });
     }
+  }
 
+  private matchTrack(video: AudioFeatures, track: AudioFeatures): TrackMatchRecord {
+    const fp = matchFingerprintSeries(video.fingerprint, track.fingerprint);
+    if (fp !== null && fp.confidence >= MIN_CONFIDENCE) {
+      return { startSec: fp.offsetSec, confidence: fp.confidence, method: "chromaprint", reason: "matched" };
+    }
+    const cc = crossCorrelation(video.envelope, track.envelope, video.envelopeFrameSec);
+    if (cc !== null && cc.confidence >= GOOD_CONFIDENCE) {
+      return { startSec: cc.offsetSec, confidence: cc.confidence, method: "cross-correlation", reason: "matched" };
+    }
+    return { startSec: null, confidence: fp?.confidence ?? 0, method: null, reason: "no confident match" };
+  }
+
+  /**
+   * Align the given tracks to a video. Per (video, MP3) results are cached by content hash, so
+   * adding one MP3 to a workspace only costs that MP3; the rest is read back from the cache.
+   */
+  async analyzeVideo(input: AnalyzeInput): Promise<AnalyzeOutput> {
+    const { videoPath } = input;
+    const report = (message: string, fraction: number) => this.onProgress({ videoPath, message, fraction });
+    const tracks = [...input.tracks].sort((a, b) => a.trackNo - b.trackNo);
+
+    report("Reading video…", 0);
+    const videoSha = await cachedSha256(videoPath, this.cacheDir);
     const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lmsync-"));
     try {
-      const tracks = [...input.releaseFolder.tracks].sort((a, b) => a.trackNo - b.trackNo);
-      this.onProgress({ phase: "decoding-video", message: "Decoding video audio…", fraction: 0.02 });
-      const videoWav = path.join(tempDir, "video.wav");
-      await this.decodeToWav(input.videoPath, videoWav);
-      const videoFp = await this.fingerprint(videoWav);
-      let videoEnvelope: { envelope: Float32Array; durationSec: number } | null = null;
-      const getVideoEnvelope = async () => (videoEnvelope ??= await wavEnvelope(videoWav));
-      const videoDurationSec = (await getVideoEnvelope()).durationSec;
+      let videoFeatures: AudioFeatures | null = null;
+      const getVideoFeatures = async () => {
+        if (videoFeatures === null) {
+          report("Decoding video audio…", 0.05);
+          videoFeatures = await this.features(videoPath, videoSha, tempDir);
+        }
+        return videoFeatures;
+      };
 
-      const accepted: TrackAlignment[] = [];
+      const records = new Map<string, TrackMatchRecord>();
+      const failures = new Map<string, string>();
+      let cachedTracks = 0;
+      for (const [index, track] of tracks.entries()) {
+        report(`Matching track ${track.trackNo} (${index + 1}/${tracks.length})…`, 0.1 + (0.9 * index) / tracks.length);
+        try {
+          const mp3Sha = await cachedSha256(track.mp3Path, this.cacheDir);
+          const cached = await readMatch(videoSha, mp3Sha, this.alignerVersion, this.cacheDir);
+          if (cached !== null) {
+            records.set(track.trackKey, cached);
+            cachedTracks++;
+            continue;
+          }
+          const video = await getVideoFeatures();
+          const mp3 = await this.features(track.mp3Path, mp3Sha, tempDir);
+          const record = this.matchTrack(video, mp3);
+          await writeMatch(videoSha, mp3Sha, this.alignerVersion, record, this.cacheDir);
+          records.set(track.trackKey, record);
+        } catch (error) {
+          failures.set(track.trackKey, errorMessage(error));
+        }
+      }
+
+      const durationSec = (await getVideoFeatures()).durationSec;
+      const accepted: AlignmentTrack[] = [];
       const results: TrackMatchResult[] = [];
       let previousStart = -Infinity;
-
-      for (const [index, track] of tracks.entries()) {
-        this.onProgress({
-          phase: "track",
-          message: `Matching track ${track.trackNo} (${index + 1}/${tracks.length})…`,
-          fraction: 0.1 + (0.9 * index) / Math.max(1, tracks.length),
+      for (const track of tracks) {
+        const fail = (reason: string): TrackMatchResult => ({
+          trackKey: track.trackKey,
+          trackNo: track.trackNo,
+          status: "unmatched",
+          videoStartSec: null,
+          confidence: null,
+          method: null,
+          reason,
         });
-        try {
-          const trackWav = path.join(tempDir, `track-${track.trackNo}.wav`);
-          await this.decodeToWav(track.mp3Path, trackWav);
-          const trackFp = await this.fingerprint(trackWav);
-
-          let startSec: number | null = null;
-          let confidence = 0;
-          let method: AlignmentMethod = "chromaprint";
-          const fp = matchFingerprintSeries(videoFp, trackFp);
-          if (fp !== null && fp.confidence >= MIN_CONFIDENCE) {
-            startSec = fp.offsetSec;
-            confidence = fp.confidence;
-          } else {
-            const trackEnv = await wavEnvelope(trackWav);
-            const cc = crossCorrelation((await getVideoEnvelope()).envelope, trackEnv.envelope, ENVELOPE_FRAME_SEC);
-            if (cc !== null && cc.confidence >= GOOD_CONFIDENCE) {
-              startSec = cc.offsetSec;
-              confidence = cc.confidence;
-              method = "cross-correlation";
-            }
-          }
-
-          if (startSec === null) {
-            results.push(matchResult(track.trackNo, "unmatched", null, null, null, "no confident match"));
-          } else if (startSec < -CROSSFADE_TOLERANCE_SEC || startSec > videoDurationSec) {
-            results.push(matchResult(track.trackNo, "unmatched", null, null, null, "offset outside video"));
-          } else if (startSec <= previousStart) {
-            results.push(matchResult(track.trackNo, "unmatched", null, null, null, "offset not after previous track"));
-          } else {
-            const videoStartSec = Math.max(0, startSec);
-            accepted.push({
-              trackNo: track.trackNo,
-              mp3Path: track.mp3Path,
-              lrcPath: track.lrcPath,
-              videoStartSec,
-              mp3StartSec: 0,
-              confidence,
-              method,
-            });
-            previousStart = startSec;
-            results.push(
-              matchResult(track.trackNo, statusForConfidence(confidence), videoStartSec, confidence, method, "matched"),
-            );
-          }
-        } catch (error) {
-          results.push(
-            matchResult(
-              track.trackNo,
-              "unmatched",
-              null,
-              null,
-              null,
-              error instanceof Error ? error.message : String(error),
-            ),
-          );
+        const record = records.get(track.trackKey);
+        if (record === undefined) {
+          results.push(fail(failures.get(track.trackKey) ?? "not analyzed"));
+        } else if (record.startSec === null) {
+          results.push(fail(record.reason));
+        } else if (record.startSec < -CROSSFADE_TOLERANCE_SEC || record.startSec > durationSec) {
+          results.push(fail("offset outside the video"));
+        } else if (record.startSec <= previousStart) {
+          results.push(fail("offset not after the previous track"));
+        } else {
+          const videoStartSec = Math.max(0, record.startSec);
+          previousStart = record.startSec;
+          accepted.push({
+            trackKey: track.trackKey,
+            trackNo: track.trackNo,
+            mp3Path: track.mp3Path,
+            videoStartSec,
+            mp3StartSec: 0,
+            confidence: record.confidence,
+            method: record.method ?? "chromaprint",
+          });
+          results.push({
+            trackKey: track.trackKey,
+            trackNo: track.trackNo,
+            status: statusForConfidence(record.confidence),
+            videoStartSec,
+            confidence: record.confidence,
+            method: record.method,
+            reason: "matched",
+          });
         }
       }
 
       const alignment: Alignment = {
-        version: 1,
-        video: {
-          source: input.source,
-          fileName: input.fileName,
-          filePath: input.videoPath,
-          durationSec: videoDurationSec,
-        },
-        release: input.release,
+        version: 2,
+        video: { fileName: input.fileName, filePath: videoPath, durationSec },
         tracks: accepted,
         generatedAt: this.now().toISOString(),
         alignerVersion: this.alignerVersion,
       };
-      await writeAlignment(key, alignment, this.cacheDir);
-      this.onProgress({ phase: "done", message: "Done", fraction: 1 });
-      return {
-        alignment,
-        matchReport: { videoPath: input.videoPath, release: input.release, results },
-        cached: false,
-        lrcs: await this.lrcsFor(accepted),
-      };
+      await writeAlignment(videoSha, this.alignerVersion, alignment, this.cacheDir);
+      report("Done", 1);
+      return { alignment, matchReport: { videoPath, results }, cachedTracks };
     } finally {
       await fs.promises.rm(tempDir, { recursive: true, force: true });
     }
-  }
-
-  private async lrcsFor(tracks: TrackAlignment[]): Promise<Record<number, ParsedLrc>> {
-    const lrcs: Record<number, ParsedLrc> = {};
-    for (const track of tracks) {
-      const lrc = await this.loadLrc(track.lrcPath);
-      if (lrc !== null) lrcs[track.trackNo] = lrc;
-    }
-    return lrcs;
   }
 }

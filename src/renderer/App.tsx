@@ -1,85 +1,90 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  elementTimeForTrack,
-  findCurrentTrack,
-  mp3TimeForTrack,
-  planSync,
-  targetForTile,
-} from "../sync/clock";
-import type { LrcCue, ReleaseFolder, VideoSource } from "../shared/types";
-import { LrcScroller } from "./components/LrcScroller";
+import { fileNameOf, VIDEO_EXTENSIONS } from "../shared/files";
+import { buildTracks } from "../shared/tracks";
+import { addPaths, emptyWorkspace, removePath, setVideoSource } from "../shared/workspace";
+import type { Alignment, LrcCue, ParsedLrc, WorkspaceFile } from "../shared/types";
+import { elementTimeForTrack, findCurrentTrack, isAligned, planSync, targetForTile } from "../sync/clock";
+import { ChoreographyTile, type VideoColumn } from "./components/ChoreographyTile";
 import { TransportBar } from "./components/TransportBar";
 import { VideoTile } from "./components/VideoTile";
-import type { LoopRange, PendingTileState, VideoTileState } from "./types";
+import type { LoopRange, VideoAnalysis } from "./types";
 
-const FOLDERS_KEY = "lmsync.folders";
-const WORKSPACE_KEY = "lmsync.workspace";
-const VIDEO_EXTENSIONS = [".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"];
 const UI_UPDATE_MS = 100;
+const SAVE_DEBOUNCE_MS = 300;
+const NO_ANALYSIS: VideoAnalysis = { sig: null, alignment: null, report: null, running: null, error: null };
 
-interface SavedWorkspace {
-  releaseFolderPath: string | null;
-  videos: Array<{ path: string; source: VideoSource }>;
+interface PlaybackView {
+  videos: Array<{ path: string; alignment: Alignment | null; isReference: boolean }>;
+  durationSec: number;
 }
 
-function loadJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw === null ? fallback : (JSON.parse(raw) as T);
-  } catch {
-    return fallback;
-  }
-}
-
-function fileNameOf(filePath: string): string {
-  return filePath.split(/[\\/]/).pop() ?? filePath;
-}
-
-function isVideo(name: string): boolean {
-  return VIDEO_EXTENSIONS.some((ext) => name.toLowerCase().endsWith(ext));
+function errorText(error: unknown): string {
+  return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
 }
 
 export function App() {
-  const [folders, setFolders] = useState<string[]>(() => loadJson<string[]>(FOLDERS_KEY, []));
-  const [releases, setReleases] = useState<ReleaseFolder[]>([]);
-  const [releasesLoaded, setReleasesLoaded] = useState(false);
-  const [selectedPath, setSelectedPath] = useState<string | null>(
-    () => loadJson<SavedWorkspace>(WORKSPACE_KEY, { releaseFolderPath: null, videos: [] }).releaseFolderPath,
-  );
-  const [source, setSource] = useState<VideoSource>("self");
-  const [tiles, setTiles] = useState<VideoTileState[]>([]);
-  const [pending, setPending] = useState<PendingTileState[]>([]);
+  const [workspace, setWorkspace] = useState<WorkspaceFile>(emptyWorkspace);
+  const [ready, setReady] = useState(false);
+  const [missing, setMissing] = useState<Set<string>>(new Set());
+  const [analysis, setAnalysis] = useState<Record<string, VideoAnalysis>>({});
+  const [lrcs, setLrcs] = useState<Record<string, ParsedLrc>>({});
+  const [durations, setDurations] = useState<Record<string, number>>({});
+  const [previewKey, setPreviewKey] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeedState] = useState(1);
   const [loop, setLoop] = useState<LoopRange | null>(null);
   const [timeSec, setTimeSec] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
 
   const masterRef = useRef(0);
-  const tilesRef = useRef<VideoTileState[]>([]);
-  tilesRef.current = tiles;
   const playingRef = useRef(false);
   const speedRef = useRef(1);
   const loopRef = useRef<LoopRange | null>(null);
   loopRef.current = loop;
   const videoEls = useRef(new Map<string, HTMLVideoElement>());
-  const idSeq = useRef(0);
-  const restored = useRef(false);
+  const viewRef = useRef<PlaybackView>({ videos: [], durationSec: 0 });
+  const workspaceRef = useRef(workspace);
+  workspaceRef.current = workspace;
 
-  const selectedRelease = useMemo(
-    () => releases.find((r) => r.folderPath === selectedPath) ?? null,
-    [releases, selectedPath],
+  const tracks = useMemo(() => buildTracks(workspace.mp3s, workspace.lrcs), [workspace.mp3s, workspace.lrcs]);
+  const analyzable = useMemo(
+    () =>
+      tracks
+        .filter((t) => t.mp3Path !== null && !missing.has(t.mp3Path))
+        .map((t) => ({ trackKey: t.key, trackNo: t.trackNo, mp3Path: t.mp3Path as string })),
+    [tracks, missing],
   );
-  const reference = tiles[0] ?? null;
-  const durationSec = reference?.alignment.video.durationSec ?? 0;
+  const sig = useMemo(() => analyzable.map((t) => `${t.trackKey}=${t.mp3Path}`).join("|"), [analyzable]);
+
+  const videos = useMemo(
+    () =>
+      workspace.videos.map((v) => ({
+        ...v,
+        fileName: fileNameOf(v.path),
+        missing: missing.has(v.path),
+        analysis: analysis[v.path] as VideoAnalysis | undefined,
+        alignment: analysis[v.path]?.alignment ?? null,
+      })),
+    [workspace.videos, missing, analysis],
+  );
+  const reference = videos.find((v) => !v.missing) ?? null;
+  const refAlignment = reference?.alignment ?? null;
+  const durationSec = (reference && durations[reference.path]) || refAlignment?.video.durationSec || 0;
+  const playableCount = videos.filter((v) => !v.missing).length;
+
+  viewRef.current = {
+    videos: videos.filter((v) => !v.missing).map((v) => ({ path: v.path, alignment: v.alignment, isReference: v === reference })),
+    durationSec,
+  };
 
   const syncElements = useCallback((masterSec: number, forceSeek: boolean) => {
-    const ref = tilesRef.current[0];
-    if (!ref) return;
-    for (const tile of tilesRef.current) {
-      const el = videoEls.current.get(tile.id);
+    const { videos: list } = viewRef.current;
+    const refAlign = list.find((v) => v.isReference)?.alignment ?? null;
+    for (const video of list) {
+      const el = videoEls.current.get(video.path);
       if (!el) continue;
-      const { targetSec } = targetForTile(ref.alignment, tile.alignment, masterSec);
+      const { targetSec } = targetForTile(refAlign, video.alignment, masterSec, video.isReference);
       const outside = targetSec === null || targetSec < 0 || (el.duration > 0 && targetSec > el.duration);
       if (outside) {
         if (!el.paused) el.pause();
@@ -96,8 +101,8 @@ export function App() {
 
   const seek = useCallback(
     (sec: number) => {
-      const max = tilesRef.current[0]?.alignment.video.durationSec ?? 0;
-      const clamped = Math.min(Math.max(0, sec), max);
+      const max = viewRef.current.durationSec;
+      const clamped = Math.max(0, max > 0 ? Math.min(sec, max) : sec);
       masterRef.current = clamped;
       setTimeSec(clamped);
       syncElements(clamped, true);
@@ -116,7 +121,7 @@ export function App() {
       pauseAll();
       return;
     }
-    if (tilesRef.current.length === 0) return;
+    if (viewRef.current.videos.length === 0) return;
     playingRef.current = true;
     setPlaying(true);
     syncElements(masterRef.current, true);
@@ -138,8 +143,8 @@ export function App() {
         masterRef.current = range.startSec;
         forceSeek = true;
       }
-      const max = tilesRef.current[0]?.alignment.video.durationSec ?? 0;
-      if (masterRef.current >= max) {
+      const max = viewRef.current.durationSec;
+      if (max > 0 && masterRef.current >= max) {
         masterRef.current = max;
         setTimeSec(max);
         pauseAll();
@@ -162,35 +167,101 @@ export function App() {
     for (const el of videoEls.current.values()) el.playbackRate = next;
   }, []);
 
-  const registerRef = useCallback((id: string, el: HTMLVideoElement | null) => {
-    if (el) videoEls.current.set(id, el);
-    else videoEls.current.delete(id);
+  const registerRef = useCallback((path: string, el: HTMLVideoElement | null) => {
+    if (el) videoEls.current.set(path, el);
+    else videoEls.current.delete(path);
   }, []);
 
-  // Folders / releases.
+  const onDuration = useCallback((path: string, sec: number) => {
+    if (Number.isFinite(sec)) setDurations((prev) => (prev[path] === sec ? prev : { ...prev, [path]: sec }));
+  }, []);
+
+  // Workspace: load the last one on launch, then auto-save every change.
   useEffect(() => {
-    localStorage.setItem(FOLDERS_KEY, JSON.stringify(folders));
+    void window.lmsync.workspace.load().then((saved) => {
+      if (saved) setWorkspace(saved);
+      setReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return;
+    const timer = setTimeout(() => void window.lmsync.workspace.save(workspace), SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [ready, workspace]);
+
+  // Which workspace files are gone from disk.
+  useEffect(() => {
+    const paths = [...workspace.videos.map((v) => v.path), ...workspace.mp3s, ...workspace.lrcs];
+    if (paths.length === 0) {
+      setMissing((prev) => (prev.size === 0 ? prev : new Set()));
+      return;
+    }
     let cancelled = false;
-    setReleasesLoaded(false);
-    void window.lmsync.releases.list(folders).then((found) => {
-      if (cancelled) return;
-      setReleases(found);
-      setReleasesLoaded(true);
+    void window.lmsync.exists(paths).then((found) => {
+      if (!cancelled) setMissing(new Set(paths.filter((p) => !found[p])));
     });
     return () => {
       cancelled = true;
     };
-  }, [folders]);
+  }, [workspace]);
 
   useEffect(() => {
-    return window.lmsync.onProgress((progress) => {
-      setPending((prev) =>
-        prev.length === 0
-          ? prev
-          : prev.map((p, i) => (i === 0 ? { ...p, message: progress.message, fraction: progress.fraction } : p)),
-      );
-    });
-  }, []);
+    for (const lrcPath of workspace.lrcs) {
+      if (lrcs[lrcPath] || missing.has(lrcPath)) continue;
+      void window.lmsync.loadLrc(lrcPath).then((parsed) => {
+        if (parsed) setLrcs((prev) => ({ ...prev, [lrcPath]: parsed }));
+        else setMessage(`${fileNameOf(lrcPath)} could not be read as an LRC file.`);
+      });
+    }
+  }, [workspace.lrcs, lrcs, missing]);
+
+  // Re-analyze whenever a video has not yet been aligned against the current set of MP3s.
+  useEffect(() => {
+    if (!ready) return;
+    for (const video of workspace.videos) {
+      if (missing.has(video.path)) continue;
+      const current = analysis[video.path];
+      if (current?.running) continue;
+      if (analyzable.length === 0) {
+        if (current && (current.alignment || current.sig !== null)) setAnalysis((prev) => ({ ...prev, [video.path]: NO_ANALYSIS }));
+        continue;
+      }
+      if (current?.sig === sig) continue;
+      const videoPath = video.path;
+      const startedSig = sig;
+      setAnalysis((prev) => ({
+        ...prev,
+        [videoPath]: { ...(prev[videoPath] ?? NO_ANALYSIS), running: { message: "Queued…", fraction: 0 }, error: null },
+      }));
+      window.lmsync
+        .analyze({ videoPath, fileName: fileNameOf(videoPath), tracks: analyzable })
+        .then((result) =>
+          setAnalysis((prev) => ({
+            ...prev,
+            [videoPath]: { sig: startedSig, alignment: result.alignment, report: result.matchReport, running: null, error: null },
+          })),
+        )
+        .catch((error: unknown) =>
+          setAnalysis((prev) => ({
+            ...prev,
+            [videoPath]: { ...(prev[videoPath] ?? NO_ANALYSIS), sig: startedSig, running: null, error: errorText(error) },
+          })),
+        );
+    }
+  }, [ready, workspace.videos, missing, analysis, analyzable, sig]);
+
+  useEffect(
+    () =>
+      window.lmsync.onProgress((progress) =>
+        setAnalysis((prev) => {
+          const current = prev[progress.videoPath];
+          if (!current?.running) return prev;
+          return { ...prev, [progress.videoPath]: { ...current, running: { message: progress.message, fraction: progress.fraction } } };
+        }),
+      ),
+    [],
+  );
 
   // Dropping a file anywhere must never navigate the window to it.
   useEffect(() => {
@@ -203,125 +274,98 @@ export function App() {
     };
   }, []);
 
-  const addVideo = useCallback(async (filePath: string, videoSource: VideoSource, release: ReleaseFolder | null) => {
-    if (release === null) {
-      setMessage("Pick a release in the sidebar first, then add the video.");
-      return;
+  const addFiles = useCallback((paths: string[]) => {
+    if (paths.length === 0) return;
+    const result = addPaths(workspaceRef.current, paths);
+    workspaceRef.current = result.workspace;
+    setWorkspace(result.workspace);
+    const notes: string[] = [];
+    if (result.rejected.length > 0) {
+      notes.push(`Not a supported file: ${result.rejected.map(fileNameOf).join(", ")}. Use videos (MP4, M4V, MOV, …), MP3 or LRC.`);
     }
-    if (tilesRef.current.some((t) => t.path === filePath)) {
-      setMessage(`${fileNameOf(filePath)} is already loaded.`);
-      return;
-    }
-    const id = `video-${idSeq.current++}`;
-    const fileName = fileNameOf(filePath);
-    setMessage(null);
-    setPending((prev) => [...prev, { id, fileName, message: "Queued…", fraction: 0, error: null }]);
-    try {
-      const result = await window.lmsync.analyze({
-        videoPath: filePath,
-        source: videoSource,
-        fileName,
-        release: { program: release.program, release: release.release },
-        releaseFolder: release,
-      });
-      setPending((prev) => prev.filter((p) => p.id !== id));
-      if (result.alignment.tracks.length === 0) {
-        const reasons = result.matchReport.results.map((r) => `track ${r.trackNo}: ${r.reason}`).join("; ");
-        setMessage(`No tracks of ${release.program} ${release.release} could be matched in ${fileName}. ${reasons}`);
-        return;
-      }
-      const unmatched = result.matchReport.results.filter((r) => r.status === "unmatched");
-      if (unmatched.length > 0) {
-        setMessage(`${fileName}: ${unmatched.length} track(s) could not be matched and were left out.`);
-      }
-      setTiles((prev) => [
-        ...prev,
-        {
-          id,
-          source: videoSource,
-          path: filePath,
-          fileName,
-          release,
-          alignment: result.alignment,
-          matchReport: result.matchReport,
-          lrcs: result.lrcs,
-        },
-      ]);
-    } catch (error) {
-      setPending((prev) => prev.filter((p) => p.id !== id));
-      setMessage(`Could not analyze ${fileName}: ${error instanceof Error ? error.message : String(error)}`);
-    }
+    if (result.duplicates.length > 0) notes.push(`Already in the workspace: ${result.duplicates.map(fileNameOf).join(", ")}.`);
+    setMessage(notes.length > 0 ? notes.join(" ") : null);
   }, []);
 
-  const removeTile = useCallback(
-    (id: string) => {
+  const dropFiles = useCallback(
+    (files: FileList | null) => {
+      if (files) addFiles(Array.from(files, (file) => window.lmsync.pathForFile(file)).filter((p) => p !== ""));
+    },
+    [addFiles],
+  );
+
+  const removeFile = useCallback(
+    (filePath: string) => {
+      if (reference?.path === filePath) {
+        pauseAll();
+        setLoop(null);
+        masterRef.current = 0;
+        setTimeSec(0);
+      }
+      setWorkspace((prev) => removePath(prev, filePath));
+    },
+    [reference, pauseAll],
+  );
+
+  const replaceWorkspace = useCallback(
+    (next: WorkspaceFile) => {
       pauseAll();
       setLoop(null);
       masterRef.current = 0;
       setTimeSec(0);
-      setTiles((prev) => prev.filter((t) => t.id !== id));
+      setAnalysis({});
+      setWorkspace(next);
     },
     [pauseAll],
   );
 
-  // Workspace: restore once the release list is known, then save on every change.
-  useEffect(() => {
-    if (restored.current || !releasesLoaded) return;
-    restored.current = true;
-    const saved = loadJson<SavedWorkspace>(WORKSPACE_KEY, { releaseFolderPath: null, videos: [] });
-    const release = releases.find((r) => r.folderPath === saved.releaseFolderPath) ?? null;
-    if (release === null) return;
-    for (const video of saved.videos) void addVideo(video.path, video.source, release);
-  }, [releasesLoaded, releases, addVideo]);
+  const newWorkspace = useCallback(() => {
+    const hasContent = workspace.videos.length + workspace.mp3s.length + workspace.lrcs.length > 0;
+    if (!hasContent || window.confirm("Clear the workspace? (Files on disk are not touched.)")) replaceWorkspace(emptyWorkspace());
+  }, [workspace, replaceWorkspace]);
 
-  useEffect(() => {
-    if (!restored.current) return;
-    const workspace: SavedWorkspace = {
-      releaseFolderPath: selectedPath,
-      videos: tiles.map((t) => ({ path: t.path, source: t.source })),
-    };
-    localStorage.setItem(WORKSPACE_KEY, JSON.stringify(workspace));
-  }, [tiles, selectedPath]);
-
-  const handleFiles = useCallback(
-    (files: FileList | null) => {
-      if (!files) return;
-      for (const file of Array.from(files)) {
-        if (!isVideo(file.name)) {
-          setMessage(`${file.name}: drop a video here. Releases (MP3 + LRC) are added as folders in the sidebar.`);
-          continue;
-        }
-        void addVideo(window.lmsync.pathForFile(file), source, selectedRelease);
+  const openWorkspace = useCallback(async () => {
+    try {
+      const opened = await window.lmsync.workspace.open();
+      if (opened) {
+        replaceWorkspace(opened.workspace);
+        setMessage(`Opened ${fileNameOf(opened.path)}.`);
       }
-    },
-    [addVideo, selectedRelease, source],
-  );
+    } catch (error) {
+      setMessage(errorText(error));
+    }
+  }, [replaceWorkspace]);
 
-  const addFolder = useCallback(async () => {
-    const folder = await window.lmsync.releases.pickFolder();
-    if (folder !== null) setFolders((prev) => (prev.includes(folder) ? prev : [...prev, folder]));
+  const saveCopy = useCallback(async () => {
+    const saved = await window.lmsync.workspace.saveAs(workspace);
+    if (saved) setMessage(`Saved ${saved}`);
+  }, [workspace]);
+
+  const pickFiles = useCallback(async () => addFiles(await window.lmsync.pickFiles()), [addFiles]);
+
+  const clearCache = useCallback(async () => {
+    await window.lmsync.clearCache();
+    setAnalysis({});
+    setMessage("Analysis cache cleared; videos will be analyzed again.");
   }, []);
 
-  // Derived playback state.
-  const refTrack = reference ? findCurrentTrack(reference.alignment, timeSec) : null;
-  const mp3Time = refTrack ? mp3TimeForTrack(refTrack, timeSec) : null;
-  const refTrackNo = refTrack?.trackNo ?? null;
-  const cues = useMemo<LrcCue[]>(
-    () => (reference && refTrackNo !== null ? (reference.lrcs[refTrackNo]?.cues ?? []) : []),
-    [reference, refTrackNo],
-  );
+  // Choreography tile: follows the reference's alignment, or previews a track when not synced.
+  const synced = isAligned(refAlignment);
+  const refTarget = targetForTile(refAlignment, refAlignment, timeSec, true);
+  const refAlignTrack = refAlignment && refTarget.trackKey ? refAlignment.tracks.find((t) => t.trackKey === refTarget.trackKey) : undefined;
+  const previewTrack = tracks.find((t) => t.key === previewKey && t.lrcPath) ?? tracks.find((t) => t.lrcPath) ?? null;
+  const activeTrack = synced ? (tracks.find((t) => t.key === refTarget.trackKey) ?? null) : previewTrack;
+  const mp3Time = synced ? refTarget.mp3TimeSec : playableCount > 0 ? timeSec : null;
+  const activeLrc = activeTrack?.lrcPath ? lrcs[activeTrack.lrcPath] : undefined;
+  const cues = useMemo<LrcCue[]>(() => activeLrc?.cues ?? [], [activeLrc]);
   let activeIndex = -1;
   if (mp3Time !== null) {
-    cues.forEach((cue, i) => {
-      if (cue.timeSec <= mp3Time) activeIndex = i;
-    });
+    for (let i = 0; i < cues.length; i++) if (cues[i].timeSec <= mp3Time) activeIndex = i;
   }
 
-  const onCueClick = useCallback(
-    (cue: LrcCue) => {
-      if (refTrack) seek(elementTimeForTrack(refTrack, cue.timeSec));
-    },
-    [refTrack, seek],
+  const masterTimeForMp3 = useCallback(
+    (t: number) => (refAlignTrack ? elementTimeForTrack(refAlignTrack, t) : t),
+    [refAlignTrack],
   );
 
   const toggleLoop = useCallback(() => {
@@ -329,173 +373,142 @@ export function App() {
       setLoop(null);
       return;
     }
-    if (!refTrack || cues.length === 0) return;
+    if (cues.length === 0) return;
     const index = Math.max(0, activeIndex);
     const start = cues[index].timeSec;
     const end = cues[index + 1]?.timeSec ?? start + 8;
-    setLoop({
-      startSec: elementTimeForTrack(refTrack, start),
-      endSec: elementTimeForTrack(refTrack, end),
-      trackNo: refTrack.trackNo,
-      cueIndex: index,
-    });
-  }, [refTrack, cues, activeIndex]);
+    setLoop({ startSec: masterTimeForMp3(start), endSec: masterTimeForMp3(end), cueIndex: index, trackKey: activeTrack?.key ?? null });
+  }, [cues, activeIndex, masterTimeForMp3, activeTrack]);
 
-  const sortedTracks = useMemo(
-    () => (reference ? [...reference.alignment.tracks].sort((a, b) => a.videoStartSec - b.videoStartSec) : []),
-    [reference],
+  const sortedAlignTracks = useMemo(
+    () => (refAlignment ? [...refAlignment.tracks].sort((a, b) => a.videoStartSec - b.videoStartSec) : []),
+    [refAlignment],
   );
 
   const nextTrack = useCallback(() => {
-    const next = sortedTracks.find((t) => t.videoStartSec > masterRef.current + 0.5);
+    const next = sortedAlignTracks.find((t) => t.videoStartSec > masterRef.current + 0.5);
     if (next) seek(next.videoStartSec);
-  }, [sortedTracks, seek]);
+  }, [sortedAlignTracks, seek]);
 
   const prevTrack = useCallback(() => {
-    const current = findCurrentTrack(tilesRef.current[0].alignment, masterRef.current);
+    const current = refAlignment ? findCurrentTrack(refAlignment, masterRef.current) : null;
     if (current && masterRef.current - current.videoStartSec > 3) {
       seek(current.videoStartSec);
       return;
     }
-    const before = sortedTracks.filter((t) => t.videoStartSec < (current?.videoStartSec ?? masterRef.current));
+    const before = sortedAlignTracks.filter((t) => t.videoStartSec < (current?.videoStartSec ?? masterRef.current));
     seek(before.length > 0 ? before[before.length - 1].videoStartSec : 0);
-  }, [sortedTracks, seek]);
+  }, [refAlignment, sortedAlignTracks, seek]);
 
-  const gridCount = tiles.length + pending.length + 1;
+  const columns: VideoColumn[] = videos
+    .filter((v) => !v.missing)
+    .map((v, i) => ({
+      path: v.path,
+      label: `${i + 1}${v.source === "self" ? "·Self" : "·Master"}`,
+      report: v.analysis?.report ?? null,
+      running: !!v.analysis?.running,
+    }));
+
+  const gridColumns = Math.min(videos.length + 1, 3);
+  const isEmpty = videos.length === 0 && tracks.length === 0;
 
   return (
-    <div className="app">
-      <div className="app-body">
-        <aside className="sidebar">
-          <h2>Releases</h2>
-          <p className="hint">
-            Add a folder that contains release folders (MP3s with same-named LRC files). Nothing in it is modified.
-          </p>
-          <button className="primary" onClick={() => void addFolder()}>
-            Add release folder…
-          </button>
-          {folders.map((f) => (
-            <div className="folder-row" key={f} title={f}>
-              <span>{f}</span>
-              <button onClick={() => setFolders((prev) => prev.filter((x) => x !== f))}>✕</button>
-            </div>
-          ))}
-          <div className="release-list">
-            {releasesLoaded && releases.length === 0 && folders.length > 0 && (
-              <p className="hint">No releases found (needs NN - name.mp3 plus NN - name.lrc).</p>
-            )}
-            {releases.map((r) => (
-              <div
-                key={r.folderPath}
-                className={`release-row${r.folderPath === selectedPath ? " selected" : ""}`}
-                onClick={() => setSelectedPath(r.folderPath)}
-                title={r.folderPath}
-              >
-                <span>
-                  {r.program} {r.release}
-                </span>
-                <span className="dim">{r.tracks.length} tracks</span>
-              </div>
-            ))}
-          </div>
-          <h2>Add video</h2>
-          <label className="field">
-            This video is a
-            <select value={source} onChange={(e) => setSource(e.target.value as VideoSource)}>
-              <option value="self">Self-teaching recording</option>
-              <option value="masterclass">Masterclass</option>
-            </select>
-          </label>
-          <label className="file-button primary">
-            Open video…
-            <input
-              type="file"
-              multiple
-              accept={VIDEO_EXTENSIONS.join(",")}
-              hidden
-              onChange={(e) => {
-                handleFiles(e.target.files);
-                e.target.value = "";
-              }}
-            />
-          </label>
-          {selectedRelease?.masterclassVideoPath && (
-            <button onClick={() => void addVideo(selectedRelease.masterclassVideoPath!, "masterclass", selectedRelease)}>
-              Load this release's masterclass video
+    <div
+      className={`app${dragging ? " dragging" : ""}`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={(e) => {
+        if (e.relatedTarget === null) setDragging(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        dropFiles(e.dataTransfer.files);
+      }}
+    >
+      <header className="topbar">
+        <h1>LM Sync</h1>
+        <button className="primary" onClick={() => void pickFiles()}>
+          Add files…
+        </button>
+        <span className="hint">Videos, MP3s and LRC files — or drop them anywhere</span>
+        <span className="spacer" />
+        <button onClick={newWorkspace}>New</button>
+        <button onClick={() => void openWorkspace()}>Open…</button>
+        <button onClick={() => void saveCopy()}>Save copy…</button>
+        <button onClick={() => void clearCache()} title="Forget all analysis results">
+          Clear cache
+        </button>
+      </header>
+      {message && (
+        <div className="message" onClick={() => setMessage(null)} title="Click to dismiss">
+          {message}
+        </div>
+      )}
+      <main className="workspace" style={{ ["--cols" as string]: gridColumns }}>
+        {isEmpty && (
+          <div className="empty">
+            <h2>Drop files here</h2>
+            <p>
+              Videos ({VIDEO_EXTENSIONS.slice(0, 4).join(" ")} …) play right away. Add the class's MP3s to align them, and LRC files for the
+              choreography text. Files can arrive in any order — videos are re-aligned as soon as the context is there.
+            </p>
+            <button className="primary" onClick={() => void pickFiles()}>
+              Add files…
             </button>
-          )}
-          <button onClick={() => void window.lmsync.cache.clear().then(() => setMessage("Analysis cache cleared."))}>
-            Clear analysis cache
-          </button>
-        </aside>
-        <main
-          className="content"
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            handleFiles(e.dataTransfer.files);
-          }}
-        >
-          {message && (
-            <div className="message" onClick={() => setMessage(null)}>
-              {message}
-            </div>
-          )}
-          <div className="workspace" style={{ ["--cols" as string]: Math.min(gridCount, 3) }}>
-            {tiles.length === 0 && pending.length === 0 && (
-              <div className="empty">
-                <h2>LM Sync</h2>
-                <p>1. Add a release folder · 2. Select the release · 3. Drop a video of the class here</p>
-              </div>
-            )}
-            {tiles.map((tile, index) => {
-              const target = reference ? targetForTile(reference.alignment, tile.alignment, timeSec) : null;
-              const trackAlignment = tile.alignment.tracks.find((t) => t.trackNo === target?.trackNo);
-              return (
-                <VideoTile
-                  key={tile.id}
-                  tile={tile}
-                  isReference={index === 0}
-                  confidence={trackAlignment?.confidence ?? null}
-                  missingTrack={target?.trackNo != null && !trackAlignment}
-                  registerRef={registerRef}
-                  onRemove={removeTile}
-                />
-              );
-            })}
-            {pending.map((p) => (
-              <div className="tile" key={p.id}>
-                <div className="tile-header">
-                  <span className="tile-title">{p.fileName}</span>
-                </div>
-                <div className="video-wrap pending">
-                  <span>{p.message}</span>
-                  <div className="progress">
-                    <div style={{ width: `${Math.round(p.fraction * 100)}%` }} />
-                  </div>
-                </div>
-              </div>
-            ))}
-            {tiles.length > 0 && (
-              <LrcScroller
-                title={refTrack ? `Track ${refTrack.trackNo} – choreography` : "Choreography"}
-                cues={cues}
-                activeIndex={activeIndex}
-                loopIndex={loop && refTrack && loop.trackNo === refTrack.trackNo ? loop.cueIndex : null}
-                onCueClick={onCueClick}
-              />
-            )}
           </div>
-        </main>
-      </div>
+        )}
+        {videos.map((v) => {
+          const target = targetForTile(refAlignment, v.alignment, timeSec, v === reference);
+          const trackAlignment = v.alignment?.tracks.find((t) => t.trackKey === target.trackKey);
+          return (
+            <VideoTile
+              key={v.path}
+              path={v.path}
+              fileName={v.fileName}
+              source={v.source}
+              missing={v.missing}
+              isReference={v === reference}
+              analysis={v.analysis}
+              synced={target.synced}
+              confidence={trackAlignment?.confidence ?? null}
+              missingTrack={target.synced && target.trackKey !== null && target.targetSec === null}
+              report={v.analysis?.report ?? null}
+              registerRef={registerRef}
+              onDuration={onDuration}
+              onToggleSource={(p) => setWorkspace((prev) => setVideoSource(prev, p, prev.videos.find((x) => x.path === p)?.source === "self" ? "masterclass" : "self"))}
+              onRemove={removeFile}
+            />
+          );
+        })}
+        {!isEmpty && (
+          <ChoreographyTile
+            title={activeTrack ? `${synced ? "" : "Preview: "}Track ${activeTrack.trackNo} – ${activeTrack.label}` : "Choreography"}
+            notSyncedNote={!synced && playableCount > 0 ? "not synced – follows video time" : null}
+            cues={cues}
+            activeIndex={activeIndex}
+            loopIndex={loop && loop.trackKey === (activeTrack?.key ?? null) ? loop.cueIndex : null}
+            onCueClick={(cue) => seek(masterTimeForMp3(cue.timeSec))}
+            tracks={tracks}
+            missing={missing}
+            videos={columns}
+            previewKey={previewTrack?.key ?? null}
+            onPreviewKey={setPreviewKey}
+            onRemoveFile={removeFile}
+          />
+        )}
+      </main>
       <TransportBar
         playing={playing}
-        disabled={tiles.length === 0}
+        disabled={playableCount === 0}
         timeSec={timeSec}
         durationSec={durationSec}
         speed={speed}
-        trackNo={refTrack?.trackNo ?? null}
+        trackNo={synced ? (activeTrack?.trackNo ?? null) : null}
         loopActive={loop !== null}
+        canSkipTracks={synced}
         onTogglePlay={togglePlay}
         onSkip={(delta) => seek(masterRef.current + delta)}
         onSetSpeed={setSpeed}
