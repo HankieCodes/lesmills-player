@@ -22,6 +22,16 @@ function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
 }
 
+/**
+ * Seek only when the target differs from where the element is (or is already heading):
+ * assigning currentTime again cancels an in-flight seek, so the sync loop must not
+ * re-issue the same seek every frame.
+ */
+function seekElement(el: HTMLVideoElement, targetSec: number): void {
+  if (Math.abs(el.currentTime - targetSec) <= 0.02) return;
+  el.currentTime = targetSec;
+}
+
 export function App() {
   const [workspace, setWorkspace] = useState<WorkspaceFile>(emptyWorkspace);
   const [ready, setReady] = useState(false);
@@ -90,11 +100,11 @@ export function App() {
         if (!el.paused) el.pause();
         continue;
       }
-      if (forceSeek) el.currentTime = targetSec;
+      if (forceSeek) seekElement(el, targetSec);
       if (!playingRef.current) continue;
       if (el.paused) void el.play().catch(() => undefined);
       const plan = planSync(el.currentTime, targetSec, { baseRate: speedRef.current });
-      if (plan.action === "hard-seek") el.currentTime = plan.targetSec;
+      if (plan.action === "hard-seek") seekElement(el, plan.targetSec);
       if (el.playbackRate !== plan.rate) el.playbackRate = plan.rate;
     }
   }, []);

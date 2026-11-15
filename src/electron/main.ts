@@ -1,13 +1,14 @@
-import { app, BrowserWindow, dialog, ipcMain, net, protocol } from "electron";
-import { promises as fs } from "fs";
+import { app, BrowserWindow, dialog, ipcMain, protocol } from "electron";
+import { createReadStream, promises as fs } from "fs";
 import * as path from "path";
-import { pathToFileURL } from "url";
+import { Readable } from "stream";
 import { Analyzer, type AnalyzeInput } from "../analyzer/analyzer";
 import { clearCache, getCacheDir, readJson, writeJson } from "../cache/cache";
 import { AUDIO_EXTENSIONS, LRC_EXTENSIONS, VIDEO_EXTENSIONS } from "../shared/files";
 import { parseWorkspace } from "../shared/workspace";
 import type { WorkspaceFile } from "../shared/types";
 import { log, logPath } from "./log";
+import { contentTypeFor, type ByteRange, parseByteRange } from "./media";
 
 const MEDIA_EXTENSIONS = new Set([...VIDEO_EXTENSIONS, ...AUDIO_EXTENSIONS]);
 const exe = process.platform === "win32" ? ".exe" : "";
@@ -41,18 +42,59 @@ const workingWorkspacePath = () => path.join(app.getPath("userData"), "workspace
 const dotless = (extensions: string[]) => extensions.map((e) => e.slice(1));
 const WORKSPACE_FILTER = { name: "LM Sync workspace", extensions: ["json"] };
 
+/** A file body as a web stream, optionally just one byte range. */
+function fileBody(filePath: string, range?: ByteRange): ReadableStream<Uint8Array> {
+  const stream = createReadStream(filePath, range ? { start: range.start, end: range.end } : undefined);
+  return Readable.toWeb(stream) as unknown as ReadableStream<Uint8Array>;
+}
+
 function registerMediaProtocol(): void {
-  protocol.handle("lmsync", (request) => {
+  protocol.handle("lmsync", async (request) => {
     const url = new URL(request.url);
-    const filePath = decodeURIComponent(url.pathname.slice(1));
-    if (!MEDIA_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
+    let filePath: string;
+    try {
+      filePath = decodeURIComponent(url.pathname.slice(1));
+    } catch {
+      return new Response("Bad request", { status: 400 });
+    }
+    if (url.host !== "local" || !MEDIA_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
       return new Response("Forbidden", { status: 403 });
     }
-    // net.fetch on a file:// URL honours Range requests, which <video> seeking needs.
-    return net.fetch(pathToFileURL(filePath).toString(), {
-      headers: request.headers,
-      bypassCustomProtocolHandlers: true,
+
+    // <video> only learns it can seek when the response advertises byte ranges, and
+    // net.fetch on file:// does not forward Range (electron/electron#38749), so ranges
+    // are resolved here: 206 with Content-Range for a seek, 200 with the full size otherwise.
+    let size: number;
+    try {
+      const stat = await fs.stat(filePath);
+      if (!stat.isFile()) return new Response("Not found", { status: 404 });
+      size = stat.size;
+    } catch {
+      return new Response("Not found", { status: 404 });
+    }
+
+    const headers = new Headers({
+      "Accept-Ranges": "bytes",
+      "Content-Type": contentTypeFor(filePath),
+      "Cache-Control": "no-store",
     });
+    const range = parseByteRange(request.headers.get("range"), size);
+
+    if (range.kind === "unsatisfiable") {
+      headers.set("Content-Range", `bytes */${size}`);
+      return new Response(null, { status: 416, headers });
+    }
+    if (request.method === "HEAD") {
+      headers.set("Content-Length", String(size));
+      return new Response(null, { status: 200, headers });
+    }
+    if (range.kind === "partial") {
+      headers.set("Content-Range", `bytes ${range.start}-${range.end}/${size}`);
+      headers.set("Content-Length", String(range.end - range.start + 1));
+      return new Response(fileBody(filePath, range), { status: 206, headers });
+    }
+    headers.set("Content-Length", String(size));
+    return new Response(fileBody(filePath), { status: 200, headers });
   });
 }
 
