@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { addPaths, parseWorkspace, removePath, setVideoSource } from "./workspace";
+import {
+  addPaths,
+  parseWorkspace,
+  removeManualAlignment,
+  removePath,
+  setManualAlignment,
+  setVideoSource,
+} from "./workspace";
 import { buildTracks } from "./tracks";
 import { emptyWorkspace } from "./workspace";
 
@@ -49,8 +56,58 @@ describe("workspace", () => {
 
   it("parses a saved workspace and rejects other JSON", () => {
     const parsed = parseWorkspace({ version: 2, videos: [{ path: "/v/a.mp4", source: "masterclass" }, { nope: 1 }], mp3s: ["/m/1.mp3", 3], lrcs: [] });
-    expect(parsed).toEqual({ version: 2, videos: [{ path: "/v/a.mp4", source: "masterclass" }], mp3s: ["/m/1.mp3"], lrcs: [] });
+    expect(parsed).toEqual({
+      version: 2,
+      videos: [{ path: "/v/a.mp4", source: "masterclass" }],
+      mp3s: ["/m/1.mp3"],
+      lrcs: [],
+      manualAlignments: [],
+    });
     expect(parseWorkspace({ version: 1 })).toBeNull();
     expect(parseWorkspace("x")).toBeNull();
+  });
+
+  it("keeps manual alignments in the workspace, replaces them per video+track and removes them with the MP3", () => {
+    const { workspace } = addPaths(emptyWorkspace(), ["/v/a.mov", "/m/01 - Warmup.mp3"]);
+    const withManual = setManualAlignment(workspace, {
+      videoPath: "/v/a.mov",
+      trackKey: "01 - warmup",
+      startSec: 62.5,
+      method: "manual",
+      confidence: null,
+    });
+    expect(withManual.manualAlignments).toHaveLength(1);
+
+    const replaced = setManualAlignment(withManual, {
+      videoPath: "/v/a.mov",
+      trackKey: "01 - warmup",
+      startSec: 64,
+      method: "chromaprint",
+      confidence: 0.8,
+    });
+    expect(replaced.manualAlignments).toEqual([
+      { videoPath: "/v/a.mov", trackKey: "01 - warmup", startSec: 64, method: "chromaprint", confidence: 0.8 },
+    ]);
+
+    expect(removeManualAlignment(replaced, "/v/a.mov", "01 - warmup").manualAlignments).toEqual([]);
+    expect(removePath(replaced, "/m/01 - Warmup.mp3").manualAlignments).toEqual([]);
+  });
+
+  it("validates manual alignments read from a workspace file", () => {
+    const parsed = parseWorkspace({
+      version: 2,
+      videos: [{ path: "/v/a.mp4", source: "self" }],
+      mp3s: ["/m/01.mp3"],
+      lrcs: [],
+      manualAlignments: [
+        { videoPath: "/v/a.mp4", trackKey: "01", startSec: 12.5, method: "chromaprint", confidence: 0.9 },
+        { videoPath: "/v/a.mp4", trackKey: "01", startSec: 99 },
+        { videoPath: "/v/a.mp4", trackKey: "bad", startSec: -1 },
+        { trackKey: "no-video", startSec: 3 },
+      ],
+    });
+    expect(parsed?.manualAlignments).toEqual([
+      { videoPath: "/v/a.mp4", trackKey: "01", startSec: 12.5, method: "chromaprint", confidence: 0.9 },
+    ]);
   });
 });

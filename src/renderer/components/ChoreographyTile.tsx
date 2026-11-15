@@ -22,9 +22,13 @@ interface ChoreographyTileProps {
   tracks: Track[];
   missing: Set<string>;
   videos: VideoColumn[];
+  /** Key of the track the master clock is currently inside. */
+  activeKey: string | null;
   previewKey: string | null;
   onPreviewKey: (key: string) => void;
   onRemoveFile: (path: string) => void;
+  /** Jump to the track, or open its alignment editor when it is already active. */
+  onTrackClick: (track: Track) => void;
 }
 
 function FileCell({ filePath, missing, onRemove }: { filePath: string | null; missing: Set<string>; onRemove: (p: string) => void }) {
@@ -43,6 +47,7 @@ function FileCell({ filePath, missing, onRemove }: { filePath: string | null; mi
 export function ChoreographyTile(props: ChoreographyTileProps) {
   const { cues, activeIndex, loopIndex, tracks, missing, videos } = props;
   const listRef = useRef<HTMLDivElement>(null);
+  const isLinked = (track: Track) => track.mp3Path !== null && !missing.has(track.mp3Path);
 
   useEffect(() => {
     const container = listRef.current;
@@ -110,7 +115,21 @@ export function ChoreographyTile(props: ChoreographyTileProps) {
                 <tr key={t.key}>
                   <td>{t.trackNo}</td>
                   <td className="name" title={t.label}>
-                    {t.label}
+                    {isLinked(t) ? (
+                      <button
+                        className={`track-link${t.key === props.activeKey ? " active" : ""}`}
+                        title={
+                          t.key === props.activeKey
+                            ? "Fix this track's alignment in the videos"
+                            : "Jump the player to this track's start; click again to fix its alignment"
+                        }
+                        onClick={() => props.onTrackClick(t)}
+                      >
+                        {t.label}
+                      </button>
+                    ) : (
+                      t.label
+                    )}
                   </td>
                   <td>
                     <FileCell filePath={t.mp3Path} missing={missing} onRemove={props.onRemoveFile} />
@@ -127,6 +146,10 @@ export function ChoreographyTile(props: ChoreographyTileProps) {
                           <span className="dim">no MP3</span>
                         ) : v.running && !result ? (
                           <span className="dim">…</span>
+                        ) : result?.manual ? (
+                          <span className="badge manual" title="Set in the alignment editor">
+                            manual
+                          </span>
                         ) : status === null ? (
                           <span className="dim">—</span>
                         ) : (

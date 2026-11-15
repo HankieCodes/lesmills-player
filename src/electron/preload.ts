@@ -1,11 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type { AnalyzeInput, AnalyzeOutput, AnalyzeProgress } from "../analyzer/analyzer";
-import type { ParsedLrc, WorkspaceFile } from "../shared/types";
+import type { GuidedAlignInput, GuidedAlignmentResult, ParsedLrc, WorkspaceFile } from "../shared/types";
 
 const invoke = <T>(channel: string, ...args: unknown[]): Promise<T> => ipcRenderer.invoke(channel, ...args) as Promise<T>;
 
 const api = {
   analyze: (input: AnalyzeInput) => invoke<AnalyzeOutput>("lmsync:analyze", input),
+  /** Reanalyze one track only around a start picked in the alignment editor. */
+  alignTrack: (input: GuidedAlignInput) => invoke<GuidedAlignmentResult>("lmsync:alignTrack", input),
   loadLrc: (lrcPath: string) => invoke<ParsedLrc | null>("lmsync:lrc", lrcPath),
   /** Native multi-select file dialog (videos, MP3, LRC). */
   pickFiles: () => invoke<string[]>("lmsync:pickFiles"),

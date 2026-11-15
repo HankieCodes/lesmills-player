@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fileNameOf, VIDEO_EXTENSIONS } from "../shared/files";
 import { buildTracks } from "../shared/tracks";
-import { addPaths, emptyWorkspace, removePath, setVideoSource } from "../shared/workspace";
-import type { Alignment, LrcCue, ParsedLrc, WorkspaceFile } from "../shared/types";
+import { addPaths, emptyWorkspace, removeManualAlignment, removePath, setManualAlignment, setVideoSource } from "../shared/workspace";
+import type { Alignment, LrcCue, ParsedLrc, Track, TrackStartOverride, WorkspaceFile } from "../shared/types";
 import { elementTimeForTrack, findCurrentTrack, isAligned, planSync, targetForTile } from "../sync/clock";
+import { AlignmentEditor, type AlignmentEdit, type AlignmentEditorVideo } from "./components/AlignmentEditor";
 import { ChoreographyTile, type VideoColumn } from "./components/ChoreographyTile";
 import { TransportBar } from "./components/TransportBar";
 import { VideoTile } from "./components/VideoTile";
@@ -20,6 +21,11 @@ interface PlaybackView {
 
 function errorText(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
+}
+
+function clockText(sec: number): string {
+  const s = Math.max(0, sec);
+  return `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
 }
 
 /**
@@ -46,12 +52,14 @@ export function App() {
   const [timeSec, setTimeSec] = useState(0);
   const [message, setMessage] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [alignmentEditorKey, setAlignmentEditorKey] = useState<string | null>(null);
 
   const masterRef = useRef(0);
   const playingRef = useRef(false);
   const speedRef = useRef(1);
   const loopRef = useRef<LoopRange | null>(null);
   loopRef.current = loop;
+  const appRef = useRef<HTMLDivElement>(null);
   const videoEls = useRef(new Map<string, HTMLVideoElement>());
   const viewRef = useRef<PlaybackView>({ videos: [], durationSec: 0 });
   const workspaceRef = useRef(workspace);
@@ -66,6 +74,14 @@ export function App() {
     [tracks, missing],
   );
   const sig = useMemo(() => analyzable.map((t) => `${t.trackKey}=${t.mp3Path}`).join("|"), [analyzable]);
+  const manualStartsFor = useCallback(
+    (videoPath: string): TrackStartOverride[] =>
+      workspace.manualAlignments
+        .filter((m) => m.videoPath === videoPath)
+        .map((m) => ({ trackKey: m.trackKey, startSec: m.startSec, method: m.method, confidence: m.confidence }))
+        .sort((a, b) => a.trackKey.localeCompare(b.trackKey)),
+    [workspace.manualAlignments],
+  );
 
   const videos = useMemo(
     () =>
@@ -200,6 +216,17 @@ export function App() {
     return () => clearTimeout(timer);
   }, [ready, workspace]);
 
+  // The modal owns keyboard focus while it is open; make everything behind it inert.
+  useEffect(() => {
+    const root = appRef.current;
+    if (!root) return;
+    for (const child of Array.from(root.children)) {
+      if (child.classList.contains("modal-backdrop")) continue;
+      if (alignmentEditorKey) child.setAttribute("inert", "");
+      else child.removeAttribute("inert");
+    }
+  }, [alignmentEditorKey]);
+
   // Which workspace files are gone from disk.
   useEffect(() => {
     const paths = [...workspace.videos.map((v) => v.path), ...workspace.mp3s, ...workspace.lrcs];
@@ -226,7 +253,7 @@ export function App() {
     }
   }, [workspace.lrcs, lrcs, missing]);
 
-  // Re-analyze whenever a video has not yet been aligned against the current set of MP3s.
+  // Re-analyze whenever a video has not yet been aligned against the current MP3s and its manual starts.
   useEffect(() => {
     if (!ready) return;
     for (const video of workspace.videos) {
@@ -237,15 +264,17 @@ export function App() {
         if (current && (current.alignment || current.sig !== null)) setAnalysis((prev) => ({ ...prev, [video.path]: NO_ANALYSIS }));
         continue;
       }
-      if (current?.sig === sig) continue;
+      const manualStarts = manualStartsFor(video.path);
+      const desiredSig = `${sig}|${JSON.stringify(manualStarts)}`;
+      if (current?.sig === desiredSig) continue;
       const videoPath = video.path;
-      const startedSig = sig;
+      const startedSig = desiredSig;
       setAnalysis((prev) => ({
         ...prev,
         [videoPath]: { ...(prev[videoPath] ?? NO_ANALYSIS), running: { message: "Queued…", fraction: 0 }, error: null },
       }));
       window.lmsync
-        .analyze({ videoPath, fileName: fileNameOf(videoPath), tracks: analyzable })
+        .analyze({ videoPath, fileName: fileNameOf(videoPath), tracks: analyzable, manualStarts })
         .then((result) =>
           setAnalysis((prev) => ({
             ...prev,
@@ -259,7 +288,7 @@ export function App() {
           })),
         );
     }
-  }, [ready, workspace.videos, missing, analysis, analyzable, sig]);
+  }, [ready, workspace.videos, missing, analysis, analyzable, sig, manualStartsFor]);
 
   useEffect(
     () =>
@@ -359,12 +388,100 @@ export function App() {
     setMessage("Analysis cache cleared; videos will be analyzed again.");
   }, []);
 
+  const openAlignmentEditor = useCallback(
+    (track: Track) => {
+      pauseAll();
+      setAlignmentEditorKey(track.key);
+    },
+    [pauseAll],
+  );
+
+  /**
+   * Save the alignment editor: each edited lane is reanalyzed in a window around the chosen
+   * start. A confident match may nudge the start; otherwise the user's setting is kept.
+   */
+  const saveAlignmentEdits = useCallback(
+    async (track: Track, edits: AlignmentEdit[]) => {
+      if (!track.mp3Path) return;
+      let next = workspaceRef.current;
+      const notes: string[] = [];
+      for (const edit of edits) {
+        const name = fileNameOf(edit.videoPath);
+        if (edit.startSec === null) {
+          next = removeManualAlignment(next, edit.videoPath, track.key);
+          notes.push(`${name}: automatic alignment restored`);
+          continue;
+        }
+        // Other videos that already know this track give the guided matcher a fallback probe
+        // for when the release MP3 does not match the edited video's audio. Earlier edits in
+        // this save already went into `next`, so they are usable references too.
+        const fallbackVideos = videos
+          .filter((v) => !v.missing && v.path !== edit.videoPath)
+          .flatMap((v) => {
+            const manual = next.manualAlignments.find((m) => m.videoPath === v.path && m.trackKey === track.key);
+            const startSec = manual?.startSec ?? v.alignment?.tracks.find((t) => t.trackKey === track.key)?.videoStartSec;
+            return startSec === undefined ? [] : [{ videoPath: v.path, startSec }];
+          });
+        try {
+          const result = await window.lmsync.alignTrack({
+            videoPath: edit.videoPath,
+            mp3Path: track.mp3Path,
+            startSec: edit.startSec,
+            fallbackVideos,
+          });
+          next = setManualAlignment(next, {
+            videoPath: edit.videoPath,
+            trackKey: track.key,
+            startSec: result.startSec,
+            method: result.method,
+            confidence: result.confidence,
+          });
+          const delta = result.startSec - edit.startSec;
+          const via = result.referenceVideoPath ? ` via ${fileNameOf(result.referenceVideoPath)}` : "";
+          notes.push(
+            result.matched
+              ? `${name}: nudged ${delta >= 0 ? "+" : ""}${delta.toFixed(1)} s to ${clockText(result.startSec)}${via}`
+              : `${name}: no audio match — using ${clockText(result.startSec)}`,
+          );
+        } catch (error) {
+          // Guided analysis is a refinement, not a prerequisite: keep the user's exact setting.
+          next = setManualAlignment(next, {
+            videoPath: edit.videoPath,
+            trackKey: track.key,
+            startSec: edit.startSec,
+            method: "manual",
+            confidence: null,
+          });
+          notes.push(`${name}: using your setting (${errorText(error)})`);
+        }
+      }
+      workspaceRef.current = next;
+      setWorkspace(next);
+      setAlignmentEditorKey(null);
+      setMessage(notes.join(" · "));
+    },
+    [videos],
+  );
+
   // Choreography tile: follows the reference's alignment, or previews a track when not synced.
   const synced = isAligned(refAlignment);
   const refTarget = targetForTile(refAlignment, refAlignment, timeSec, true);
   const refAlignTrack = refAlignment && refTarget.trackKey ? refAlignment.tracks.find((t) => t.trackKey === refTarget.trackKey) : undefined;
   const previewTrack = tracks.find((t) => t.key === previewKey && t.lrcPath) ?? tracks.find((t) => t.lrcPath) ?? null;
   const activeTrack = synced ? (tracks.find((t) => t.key === refTarget.trackKey) ?? null) : previewTrack;
+  const handleTrackClick = useCallback(
+    (track: Track) => {
+      if (track.key === activeTrack?.key) {
+        openAlignmentEditor(track);
+        return;
+      }
+      const aligned = refAlignment?.tracks.find((t) => t.trackKey === track.key);
+      // A track with no start yet cannot be jumped to; go straight to correcting it.
+      if (aligned) seek(aligned.videoStartSec);
+      else openAlignmentEditor(track);
+    },
+    [activeTrack, refAlignment, seek, openAlignmentEditor],
+  );
   const mp3Time = synced ? refTarget.mp3TimeSec : playableCount > 0 ? timeSec : null;
   const activeLrc = activeTrack?.lrcPath ? lrcs[activeTrack.lrcPath] : undefined;
   const cues = useMemo<LrcCue[]>(() => activeLrc?.cues ?? [], [activeLrc]);
@@ -419,11 +536,22 @@ export function App() {
       running: !!v.analysis?.running,
     }));
 
+  const editorTrack = alignmentEditorKey ? (tracks.find((t) => t.key === alignmentEditorKey) ?? null) : null;
+  const editorVideos: AlignmentEditorVideo[] = videos
+    .filter((v) => !v.missing)
+    .map((v) => ({
+      path: v.path,
+      fileName: v.fileName,
+      durationSec: durations[v.path] || v.alignment?.video.durationSec || 0,
+      alignment: v.alignment,
+    }));
+
   const gridColumns = Math.min(videos.length + 1, 3);
   const isEmpty = videos.length === 0 && tracks.length === 0;
 
   return (
     <div
+      ref={appRef}
       className={`app${dragging ? " dragging" : ""}`}
       onDragOver={(e) => {
         e.preventDefault();
@@ -484,6 +612,7 @@ export function App() {
               analysis={v.analysis}
               synced={target.synced}
               confidence={trackAlignment?.confidence ?? null}
+              manual={trackAlignment?.manual === true}
               missingTrack={target.synced && target.trackKey !== null && target.targetSec === null}
               report={v.analysis?.report ?? null}
               registerRef={registerRef}
@@ -504,12 +633,23 @@ export function App() {
             tracks={tracks}
             missing={missing}
             videos={columns}
+            activeKey={activeTrack?.key ?? null}
             previewKey={previewTrack?.key ?? null}
             onPreviewKey={setPreviewKey}
             onRemoveFile={removeFile}
+            onTrackClick={handleTrackClick}
           />
         )}
       </main>
+      {editorTrack && editorTrack.mp3Path && (
+        <AlignmentEditor
+          track={editorTrack}
+          videos={editorVideos}
+          manualAlignments={workspace.manualAlignments}
+          onClose={() => setAlignmentEditorKey(null)}
+          onSave={(edits) => saveAlignmentEdits(editorTrack, edits)}
+        />
+      )}
       <TransportBar
         playing={playing}
         disabled={playableCount === 0}

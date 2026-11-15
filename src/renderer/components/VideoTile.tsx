@@ -14,6 +14,8 @@ interface VideoTileProps {
   synced: boolean;
   /** Confidence of the current track in this video; null if unknown. */
   confidence: number | null;
+  /** True when the current track's start was set in the alignment editor. */
+  manual: boolean;
   /** True when this video has no match for the current track. */
   missingTrack: boolean;
   report: MatchReport | null;
@@ -24,10 +26,10 @@ interface VideoTileProps {
 }
 
 export function VideoTile(props: VideoTileProps) {
-  const { path, fileName, source, missing, isReference, analysis, synced, confidence, missingTrack, report } = props;
+  const { path, fileName, source, missing, isReference, analysis, synced, confidence, manual, missingTrack, report } = props;
   const [muted, setMuted] = useState(!isReference);
   const [playError, setPlayError] = useState(false);
-  const status = confidence === null ? null : statusForConfidence(confidence);
+  const status = confidence === null || manual ? null : statusForConfidence(confidence);
   const unmatched = report?.results.filter((r) => r.status === "unmatched").length ?? 0;
   const running = analysis?.running ?? null;
 
@@ -42,6 +44,11 @@ export function VideoTile(props: VideoTileProps) {
         </span>
         {isReference && <span className="badge dim">clock</span>}
         {!missing && !synced && <span className="badge low" title="Add the MP3s for this class so the video can be aligned">not synced</span>}
+        {manual && (
+          <span className="badge manual" title="Current track start was set in the alignment editor">
+            sync manual
+          </span>
+        )}
         {status && (
           <span className={`badge ${status}`} title="Alignment confidence for the current track">
             sync {(confidence! * 100).toFixed(0)}%{status === "low" ? " – low" : ""}

@@ -1,6 +1,6 @@
 export type VideoSource = "self" | "masterclass";
 
-export type AlignmentMethod = "chromaprint" | "cross-correlation";
+export type AlignmentMethod = "chromaprint" | "cross-correlation" | "manual";
 
 export type MatchStatus = "ok" | "low" | "unmatched";
 
@@ -27,6 +27,8 @@ export interface AlignmentTrack {
   /** 0..1 confidence of the alignment. */
   confidence: number;
   method: AlignmentMethod;
+  /** True when the start came from the alignment editor rather than plain analysis. */
+  manual?: boolean;
 }
 
 export interface Alignment {
@@ -49,6 +51,8 @@ export interface TrackMatchResult {
   confidence: number | null;
   method: AlignmentMethod | null;
   reason: string;
+  /** True when the start was set in the alignment editor. */
+  manual?: boolean;
 }
 
 export interface MatchReport {
@@ -75,10 +79,65 @@ export interface AnalyzeTrackInput {
   mp3Path: string;
 }
 
+/**
+ * A user-set start for one track in one video, stored in the workspace so it survives
+ * cache clears and travels with a saved workspace. `startSec` is the final start used
+ * (the guided reanalysis' nudge, or the user's setting when it found no match).
+ */
+export interface ManualAlignment {
+  videoPath: string;
+  trackKey: string;
+  startSec: number;
+  method: AlignmentMethod;
+  /** Confidence of the guided match; null when the user's setting was used as-is. */
+  confidence: number | null;
+}
+
+/** One video's manual starts, as sent to the analyzer. */
+export interface TrackStartOverride {
+  trackKey: string;
+  startSec: number;
+  method: AlignmentMethod;
+  confidence: number | null;
+}
+
+/** Reanalyze one track only around a user-selected start. */
+export interface GuidedAlignInput {
+  videoPath: string;
+  mp3Path: string;
+  /** Video time the user dragged the track's start to. */
+  startSec: number;
+  /** Other videos whose aligned audio can stand in for the MP3 when it does not match. */
+  fallbackVideos?: GuidedVideoReference[];
+}
+
+/** Another video's known start for a track; its audio from there is the fallback reference. */
+export interface GuidedVideoReference {
+  videoPath: string;
+  startSec: number;
+}
+
+/** Result of the guided reanalysis behind the alignment editor's Save. */
+export interface GuidedAlignmentResult {
+  /** The nudged match, or the user's setting when no confident match was found. */
+  startSec: number;
+  matched: boolean;
+  method: AlignmentMethod;
+  confidence: number | null;
+  /** Search window inside the video's timeline. */
+  searchedFromSec: number;
+  searchedToSec: number;
+  /** Another video whose aligned audio produced the match; null when the MP3 did. */
+  referenceVideoPath: string | null;
+  reason: string;
+}
+
 /** The workspace JSON file: just the files the user added. Everything else is derived. */
 export interface WorkspaceFile {
   version: 2;
   videos: Array<{ path: string; source: VideoSource }>;
   mp3s: string[];
   lrcs: string[];
+  /** Corrections from the alignment editor; reapplied on every analysis. */
+  manualAlignments: ManualAlignment[];
 }

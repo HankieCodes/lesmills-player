@@ -6,7 +6,7 @@ import { Analyzer, type AnalyzeInput } from "../analyzer/analyzer";
 import { clearCache, getCacheDir, readJson, writeJson } from "../cache/cache";
 import { AUDIO_EXTENSIONS, LRC_EXTENSIONS, VIDEO_EXTENSIONS } from "../shared/files";
 import { parseWorkspace } from "../shared/workspace";
-import type { WorkspaceFile } from "../shared/types";
+import type { GuidedAlignInput, WorkspaceFile } from "../shared/types";
 import { log, logPath } from "./log";
 import { contentTypeFor, type ByteRange, parseByteRange } from "./media";
 
@@ -176,12 +176,21 @@ function registerIpc(): void {
 
   ipcMain.handle("lmsync:lrc", (_event, lrcPath: string) => getAnalyzer().loadLrc(lrcPath));
 
-  // One alignment job at a time (see PLAN §10).
+  // One analysis job at a time (see PLAN §10); the editor's guided reanalysis shares the queue.
+  const enqueue = <T>(label: string, job: () => Promise<T>): Promise<T> => {
+    const next = analysisQueue.then(job);
+    analysisQueue = next.catch((error: unknown) => log("error", label, error));
+    return next;
+  };
+
   ipcMain.handle("lmsync:analyze", (_event, input: AnalyzeInput) => {
     log("info", `analyze ${input.videoPath} against ${input.tracks.length} track(s)`);
-    const job = analysisQueue.then(() => getAnalyzer().analyzeVideo(input));
-    analysisQueue = job.catch((error: unknown) => log("error", "analysis failed", error));
-    return job;
+    return enqueue("analysis failed", () => getAnalyzer().analyzeVideo(input));
+  });
+
+  ipcMain.handle("lmsync:alignTrack", (_event, input: GuidedAlignInput) => {
+    log("info", `align ${input.mp3Path} near ${input.startSec.toFixed(2)} s in ${input.videoPath}`);
+    return enqueue("guided alignment failed", () => getAnalyzer().alignTrackNear(input));
   });
 
   ipcMain.handle("lmsync:workspace:load", async () => parseWorkspace(await readJson<unknown>(workingWorkspacePath())));

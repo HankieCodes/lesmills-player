@@ -76,26 +76,47 @@ One JSON per video, rebuilt on every analysis and stored in the cache dir's `cac
       "videoStartSec": 62.31,
       "mp3StartSec": 0.0,
       "confidence": 0.93,
-      "method": "chromaprint"
+      "method": "chromaprint",
+      "manual": false
+    },
+    {
+      "trackKey": "02 - squats",
+      "trackNo": 2,
+      "mp3Path": "C:\\…\\02 - Squats.mp3",
+      "videoStartSec": 402.5,
+      "mp3StartSec": 0.0,
+      "confidence": 0,
+      "method": "manual",
+      "manual": true
     }
   ],
   "generatedAt": "2026-11-08T…",
-  "alignerVersion": "0.3.0"
+  "alignerVersion": "0.4.0"
 }
 ```
 
-`trackKey` is the normalized file-name stem and is the identity that joins an MP3, its LRC and every video's alignment. Whether a video is a *self* recording or a *masterclass* is a label stored in the workspace (§6.1), not in the alignment. Unmatched tracks are **omitted and reported**, never guessed.
+`trackKey` is the normalized file-name stem and is the identity that joins an MP3, its LRC and every video's alignment. Whether a video is a *self* recording or a *masterclass* is a label stored in the workspace (§6.1), not in the alignment. Unmatched tracks are **omitted and reported**, never guessed. Tracks with a manual correction are always included, with `"manual": true`; `confidence` is the guided match's confidence, or 0 when the user's exact setting was used.
 
 ### 4.2 Tracks, pairing and the workspace file
 
 - A **track** is identified by its file-name stem (case-insensitive, whitespace-normalized). `05 - Squats.mp3` and `05 - Squats.lrc` are the same track wherever they live on disk.
 - The **track number** is the leading digits of the stem; files without one get the next free number in the order added. Tracks sort by number.
 - A track exists as soon as **either** file is present. MP3 only: it aligns the videos but shows no choreography text. LRC only: it shows text but cannot be aligned yet.
-- The **workspace** is a JSON file listing only what the user added; everything else is derived:
+- The **workspace** is a JSON file listing only what the user added; everything else is derived. `manualAlignments` are the user's alignment-editor corrections (§6.3), stored so they survive **Clear cache** and travel with **Save copy…**:
 
 ```json
-{ "version": 2, "videos": [{ "path": "…", "source": "self" | "masterclass" }], "mp3s": ["…"], "lrcs": ["…"] }
+{
+  "version": 2,
+  "videos": [{ "path": "…", "source": "self" | "masterclass" }],
+  "mp3s": ["…"],
+  "lrcs": ["…"],
+  "manualAlignments": [
+    { "videoPath": "…", "trackKey": "02 - squats", "startSec": 402.5, "method": "manual", "confidence": null }
+  ]
+}
 ```
+
+A correction is keyed by `videoPath` + `trackKey`; re-saving replaces it. An absent entry means the track is aligned automatically. Files that disappear from the workspace drop their corrections too.
 
 ### 4.3 Analyzed-content cache (v1)
 
@@ -104,6 +125,7 @@ Everything derived lives under `cache/` in the Electron user data dir (Linux `~/
 - `hashes.json` — file SHA-256 remembered by path + size + mtime, so a large video is hashed once.
 - `features/<sha>__<ver>.json` — fingerprint series + energy envelope of a video soundtrack or an MP3.
 - `matches/<videoSha>__<mp3Sha>__<ver>.json` — the result of matching one MP3 against one video, **including "no match"**.
+- Alignment-editor corrections are **not** cached here: they live in the workspace (`manualAlignments`, §4.2), so **Clear cache** keeps them, and a guided save never overwrites the automatic per-(video, MP3) match.
 - `alignments/<videoSha>__<ver>.json` — the assembled alignment JSON (§4.1).
 - `lrcs/<lrcSha>.json` — parsed LRC.
 
@@ -122,6 +144,7 @@ Per video, for each MP3 track in the workspace:
 3. Take four probe windows (~20 s) spread across the MP3 and slide each over the whole video, minimizing bit-error rate. Probes that agree on the implied track start vote for it; the winning start is scored over the whole overlap. `confidence` combines the best probe's bit-error rate with probe agreement.
 4. **Fallback:** Pearson-normalized cross-correlation of the 4 Hz energy envelopes, accepted only at a higher confidence.
 5. Sanity checks when assembling the alignment: tracks (in track-number order) must have strictly increasing starts, and each start must lie inside the video (≤ ~10 s before 0 is clamped). Violations are omitted with a reason.
+6. **Manual corrections** win over the automatic result. When the alignment editor (§6.3) saves a lane, only that one track is reanalyzed: the video fingerprint and envelope are sliced from `selectedStart − 10 s` through `selectedStart + MP3 length + 5 s`. A confident match is accepted only if its implied start lands within `−10 s` to `+5 s` of the user's selection (one fingerprint item of slack at the bounds); otherwise the user's exact start is used with method `manual`. **A correction is never probed with the MP3 when the MP3's own automatic match already lies inside that window:** re-finding it there would snap the track back to the spot the user is moving away from, so the selected start is kept exactly. **When the MP3 is skipped, or finds no confident match**, the search retries with each other video's aligned audio for the same track as the probe: that video's fingerprint and envelope are sliced from its known start through the MP3's length and matched inside the edited video's window. The best accepted result from those references is used the same way and stored as `referenceVideoPath` in the guided result. Corrections are stored in the workspace (§4.2), not in the per-(video, MP3) match cache, so they are applied by every later analysis and are exempt from the increasing-order check (they never suppress another track's automatic match). Removing the MP3 or video removes its corrections.
 
 Confidence bands (`src/analyzer/status.ts`): ≥ 0.6 ok, 0.3–0.6 low (shown as a warning), < 0.3 unmatched. **Not yet tuned on real classes** (Phase 1 acceptance).
 
@@ -140,6 +163,7 @@ Desktop app (Electron main process + React renderer); one *session* = the curren
 - **Sync loop:** `requestAnimationFrame`; if a playing video is > 0.30 s off target, hard-seek; if 0.08–0.30 s off, nudge `playbackRate` (0.95/1.05) until it converges. Pause/play/seek applies to all panes together.
 - **Layout:** one strict grid of tiles — a tile per video plus the choreography tile — with no sidebar. The choreography tile lists the current track's LRC lines (active line highlighted, auto-scrolling; lines are **clickable → seek all panes** to that cue) and, below, the pooled track list: per track the MP3 / LRC present or missing, a remove button for each file, and each video's match status.
 - **Coaching controls:** track quick-jump (prev/next), loop current LRC block (between this line's timestamp and the next), ±5 s skip, playback speed (0.5/0.75/1/1.25), a per-track confidence badge (from alignment JSON) so Hank knows which syncs to distrust.
+- **Alignment editor:** a track name in the choreography tile's track table is a link. Clicking a track other than the active one jumps the master clock to that track's start; clicking the active track opens the editor (§6.3) so a wrong or missing match can be corrected by hand. A track with no start yet opens the editor directly, since there is nowhere to jump.
 - **Media serving:** the app plays user-selected local files directly (Electron `<video>` playback; use a custom `lmsync://` asset protocol in the main process when serving Immich originals through the API instead of local paths). **Codec caveat:** phone videos may be HEVC — Safari plays it, Chrome largely doesn't. If Phase 0 confirms HEVC self-videos, the analyzer pre-generates 720p H.264 proxies into the cache dir (proxies only for self-videos, ~a few hundred MB each, with a config cap) and the player prefers the proxy for the self pane.
 
 - **Adding files (v1):** drop any supported file anywhere on the window, or use **Add files…** (native multi-select dialog, filters for all supported / videos / MP3 / LRC / all files). Dropped paths are resolved with `webUtils.getPathForFile` in the preload. Videos accept MP4, M4V, MOV, MKV, WebM, AVI, WMV, MPG/MPEG, TS, 3GP and FLV (playback still depends on Chromium codecs; alignment only needs the audio to decode).
@@ -147,7 +171,7 @@ Desktop app (Electron main process + React renderer); one *session* = the curren
 
 ### 6.1 Workspace & tiles (v1)
 
-- A *workspace* is the JSON file described in §4.2: the videos (each labelled *self* or *masterclass*, default *self*, toggled by clicking the badge on its tile), MP3 paths and LRC paths. It is saved automatically on every change to `workspace.json` in the user data dir and reopened on launch. **New** clears it, **Open…** loads a workspace file, **Save copy…** writes one anywhere. Files that have gone missing stay listed and are flagged; they are never analyzed.
+- A *workspace* is the JSON file described in §4.2: the videos (each labelled *self* or *masterclass*, default *self*, toggled by clicking the badge on its tile), MP3 paths, LRC paths and the user's alignment-editor corrections. It is saved automatically on every change to `workspace.json` in the user data dir and reopened on launch. **New** clears it, **Open…** loads a workspace file, **Save copy…** writes one anywhere. Files that have gone missing stay listed and are flagged; they are never analyzed.
 - Tile types: **video tiles** (one per video) and one **choreography tile** holding the pooled MP3/LRC tracks, in a strict grid.
 - Any file can be added at any time. Videos are playable immediately; with no MP3s they play unsynchronized from 0:00.
 - **Analysis is automatic and incremental:** whenever the set of MP3s changes (or a video is added), every video whose alignment was built for a different MP3 set is re-analyzed. Jobs run one at a time; a progress bar and message show at the bottom of the video tile being analyzed. Because results are cached per (video, MP3) (§4.3), only new MP3s cost real work. MP3/LRC-only changes never need user action.
@@ -157,11 +181,20 @@ Desktop app (Electron main process + React renderer); one *session* = the curren
 - Per-tile video controls on video tiles; all controls drive the same virtual master clock (§ transport model above).
 - **Master play/pause control:** bottom center, below all tiles; global transport control.
 
+### 6.3 Alignment editor (manual correction)
+
+Opened by clicking the **active** track's name in the track table (only for tracks with a present MP3); clicking another track jumps the player to its start first. It pauses session playback.
+
+- **Start-frame previews:** above the timeline, one `<video>` per video in the workspace, each seeked to that video's current start for this song. Playing one starts them **all** from their start frames, with every other preview muted; pausing any of them stops them all and returns each to its start frame.
+- **Stacked timeline:** one lane per video on a **shared time axis** (0 → the longest video), so the same class moment lines up vertically. A rounded-rectangle ring marks the span from the chosen start through the MP3's length (clipped at the video's end and flagged if the song overruns it). Drag the ring (or click anywhere on a lane) to move the start; arrow keys nudge the selected lane by 0.1 s, Shift+arrow by 1 s, wherever focus sits in the modal. Next to the lane's time, a `+3.45 s` / `−1.20 s` indicator shows its change from the start it opened with.
+- **Save:** only lanes the user actually changed are reanalyzed, one track at a time, with the narrow-window search in §5 step 6. A confident match may nudge the start, but a correction small enough that the automatic MP3 match lies inside the search window is never pulled back to it: the MP3 is not probed then, and only another video's aligned audio may nudge the selection. If the MP3 itself does not match, the other videos' aligned audio for the track is tried as a fallback probe and a match is reported as coming via that video. Otherwise the user's setting is stored directly. **Reset** on a lane removes its correction and returns that video to automatic analysis. Results are written to `manualAlignments` in the workspace (§4.2), then the normal analysis pass re-assembles the video's alignment; the track table and tiles show a **manual** badge.
+
 ## 7. Electron IPC sketch (v1)
 
 No HTTP API in v1 — the Electron main process exposes an internal IPC surface between renderer and main/analyzer.
 
-- `lmsync:analyze` `{videoPath, fileName, tracks: [{trackKey, trackNo, mp3Path}]}` — run the alignment job (main → analyzer module, serialized); returns alignment JSON + match report; progress is pushed on `lmsync:analyze-progress`
+- `lmsync:analyze` `{videoPath, fileName, tracks: [{trackKey, trackNo, mp3Path}], manualStarts: [{trackKey, startSec, method, confidence}]}` — run the alignment job (main → analyzer module, serialized); returns alignment JSON + match report; progress is pushed on `lmsync:analyze-progress`
+- `lmsync:alignTrack` `{videoPath, mp3Path, startSec, fallbackVideos: [{videoPath, startSec}]}` — guided reanalysis for the alignment editor (§5 step 6); `fallbackVideos` are other videos already aligned for the same track. Returns `{startSec, matched, method, confidence, searchedFromSec, searchedToSec, referenceVideoPath, reason}`; `referenceVideoPath` is set when another video's audio produced the match. Shares the analyzer's one-job-at-a-time queue.
 - `lmsync:lrc` `path` — parsed LRC `{cues: [{timeSec, text}]}`
 - `lmsync:pickFiles` — native multi-select dialog; `lmsync:exists` — which paths still exist
 - `lmsync:workspace:load` / `:save` — the auto-saved working workspace; `:open` / `:saveAs` — workspace files chosen by the user
@@ -188,7 +221,7 @@ Auth: none in-app — the desktop app authenticates via the OS user session. No 
 
 **Phase 3 — Analyzer module interface + Electron IPC** per §7, with fixture tests for the LRC parser (real file from Phase 0), track pairing and the workspace file.
 
-**Phase 4 — Player** per §6. Acceptance: a full class session plays with both videos + choreography staying in sync end-to-end (drift check at final track: active LRC line matches audio within ~0.5 s), click-to-seek and block-loop work. Workspace auto-save/reopen and Open / Save copy work (§6.1).
+**Phase 4 — Player** per §6. Acceptance: a full class session plays with both videos + choreography staying in sync end-to-end (drift check at final track: active LRC line matches audio within ~0.5 s), click-to-seek and block-loop work. Workspace auto-save/reopen and Open / Save copy work (§6.1). The alignment editor (§6.3) can correct a wrong or missing track and the correction survives a restart and Clear cache.
 
 **Phase 5 — Package the Electron desktop app**
 - [ ] Electron main process + React renderer; bundle via electron-builder; installers for Windows (first target), macOS, Linux.
@@ -206,7 +239,7 @@ Auth: none in-app — the desktop app authenticates via the OS user session. No 
 ## 10. Risks & non-goals
 
 - **Host RAM (4.9 GB)** is the top operational risk; no in-memory media processing, no extra always-on services, analyzer strictly serial.
-- Masterclass edits that differ from release MP3s may leave individual tracks unalignable — acceptable; UI shows it honestly.
+- Masterclass edits that differ from release MP3s may leave individual tracks unalignable — acceptable; UI shows it honestly. The alignment editor (§6.3) lets Hank correct any wrong or missing match, and the correction is persisted in the workspace.
 - A track Hank *skipped or restarted mid-track* while teaching will align to its first start; mid-track restarts are out of scope for v1 (note in UI when confidence is low).
 - **Non-goals for v1:** no public/multi-user access, no accounts, no editing/re-export of videos, no changes to LM Lyrics, no writes to media/library folders, no mobile app. (Web-app deployment is retired; distribution is desktop Electron packaging.)
 - **v2 spark (not in scope):** Whisper transcription of Hank's cueing track, diffed against LRC timestamps ("cued the combo 2 counts late") — noting the host's RAM makes on-host Whisper tight; would run elsewhere or on demand.

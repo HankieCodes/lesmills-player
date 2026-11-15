@@ -15,18 +15,22 @@ import {
   type TrackMatchRecord,
 } from "../cache/cache";
 import { crossCorrelation, matchFingerprintSeries } from "./align";
+import { matchTrackAgainstReferences, matchGuided, type VideoAudioReference } from "./guided";
 import { parseLrc } from "./lrc";
 import { CROSSFADE_TOLERANCE_SEC, GOOD_CONFIDENCE, MIN_CONFIDENCE, statusForConfidence } from "./status";
 import type {
   Alignment,
   AlignmentTrack,
   AnalyzeTrackInput,
+  GuidedAlignInput,
+  GuidedAlignmentResult,
   MatchReport,
   ParsedLrc,
   TrackMatchResult,
+  TrackStartOverride,
 } from "../shared/types";
 
-export const ALIGNER_VERSION = "0.3.0";
+export const ALIGNER_VERSION = "0.4.0";
 
 const WAV_RATE = 11025;
 const ENVELOPE_FRAME_SAMPLES = 2756;
@@ -37,6 +41,8 @@ export interface AnalyzeInput {
   fileName: string;
   /** Tracks that have an MP3. Order does not matter. */
   tracks: AnalyzeTrackInput[];
+  /** Starts set in the alignment editor for this video; they win over automatic matches. */
+  manualStarts?: TrackStartOverride[];
 }
 
 export interface AnalyzeProgress {
@@ -233,6 +239,45 @@ export class Analyzer {
   }
 
   /**
+   * Reanalyze one track around a start the user picked in the alignment editor. Only the
+   * video audio from start-10 s through the track's length +5 s is searched. Returns the
+   * nudged start, or the user's start unchanged when nothing matches confidently.
+   *
+   * A correction small enough that the MP3's own automatic match sits in that window is not
+   * probed with the MP3: it would snap back to the spot the user is moving away from. Only
+   * other videos' audio for the same track may nudge it then, since the edited video may share
+   * the class recording even when it does not share the release MP3.
+   */
+  async alignTrackNear(input: GuidedAlignInput): Promise<GuidedAlignmentResult> {
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lmsync-"));
+    try {
+      const videoSha = await cachedSha256(input.videoPath, this.cacheDir);
+      const mp3Sha = await cachedSha256(input.mp3Path, this.cacheDir);
+      const video = await this.features(input.videoPath, videoSha, tempDir);
+      const track = await this.features(input.mp3Path, mp3Sha, tempDir);
+      const cachedMatch = await readMatch(videoSha, mp3Sha, this.alignerVersion, this.cacheDir);
+      const automaticStartSec = cachedMatch !== null ? cachedMatch.startSec : this.matchTrack(video, track).startSec;
+      const primary = matchGuided(video, track, input.startSec, automaticStartSec);
+      if (primary.matched) return primary;
+
+      const references: VideoAudioReference[] = [];
+      for (const reference of input.fallbackVideos ?? []) {
+        if (reference.videoPath === input.videoPath) continue;
+        try {
+          const referenceSha = await cachedSha256(reference.videoPath, this.cacheDir);
+          const features = await this.features(reference.videoPath, referenceSha, tempDir);
+          references.push({ videoPath: reference.videoPath, startSec: reference.startSec, features });
+        } catch {
+          // A missing or unreadable reference must not block the user's exact start.
+        }
+      }
+      return matchTrackAgainstReferences(video, track.durationSec, input.startSec, references) ?? primary;
+    } finally {
+      await fs.promises.rm(tempDir, { recursive: true, force: true });
+    }
+  }
+
+  /**
    * Align the given tracks to a video. Per (video, MP3) results are cached by content hash, so
    * adding one MP3 to a workspace only costs that MP3; the rest is read back from the cache.
    */
@@ -240,6 +285,7 @@ export class Analyzer {
     const { videoPath } = input;
     const report = (message: string, fraction: number) => this.onProgress({ videoPath, message, fraction });
     const tracks = [...input.tracks].sort((a, b) => a.trackNo - b.trackNo);
+    const manualStarts = new Map((input.manualStarts ?? []).map((m) => [m.trackKey, m]));
 
     report("Reading video…", 0);
     const videoSha = await cachedSha256(videoPath, this.cacheDir);
@@ -292,7 +338,30 @@ export class Analyzer {
           reason,
         });
         const record = records.get(track.trackKey);
-        if (record === undefined) {
+        const manual = manualStarts.get(track.trackKey);
+        if (manual !== undefined) {
+          const videoStartSec = Math.max(0, Math.min(manual.startSec, durationSec));
+          accepted.push({
+            trackKey: track.trackKey,
+            trackNo: track.trackNo,
+            mp3Path: track.mp3Path,
+            videoStartSec,
+            mp3StartSec: 0,
+            confidence: manual.confidence ?? 0,
+            method: manual.method,
+            manual: true,
+          });
+          results.push({
+            trackKey: track.trackKey,
+            trackNo: track.trackNo,
+            status: "ok",
+            videoStartSec,
+            confidence: manual.confidence,
+            method: manual.method,
+            reason: "set in the alignment editor",
+            manual: true,
+          });
+        } else if (record === undefined) {
           results.push(fail(failures.get(track.trackKey) ?? "not analyzed"));
         } else if (record.startSec === null) {
           results.push(fail(record.reason));
@@ -311,6 +380,7 @@ export class Analyzer {
             mp3StartSec: 0,
             confidence: record.confidence,
             method: record.method ?? "chromaprint",
+            manual: false,
           });
           results.push({
             trackKey: track.trackKey,
