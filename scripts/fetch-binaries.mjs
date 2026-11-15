@@ -23,7 +23,7 @@ if (existsSync(path.join(outDir, "ffmpeg.exe")) && existsSync(path.join(outDir, 
 }
 
 mkdirSync(outDir, { recursive: true });
-const tmp = mkdtempSync(path.join(tmpdir(), "lmsync-bin-"));
+const tmp = mkdtempSync(path.join(tmpdir(), "lmplayer-bin-"));
 try {
   await download(FPCALC_URL, path.join(tmp, "fpcalc.zip"));
   execFileSync("unzip", ["-o", "-q", path.join(tmp, "fpcalc.zip"), "-d", tmp]);

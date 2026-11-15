@@ -1,4 +1,4 @@
-# LM Sync — Build Plan
+# Les Mills Player — Build Plan
 
 **For:** OpenCode agent (Hank builds with OpenCode; this plan is the spec)
 **Prepared:** Nov 8, 2026, from live inventories of Hank's Dockhand instance and lmlyrics.brekke-peer.com
@@ -24,9 +24,9 @@
 Historical context from the Nov 8, 2026 verification — the v1 build is now an **Electron desktop app** and no longer runs in this Docker stack (see §3); kept for reference while planning the future remote-connector phase.
 
 - Host: Docker 28.2.2, Linux x64, **8 cores, 4.9 GB RAM total, 131.6 GB disk**. RAM is the binding constraint — Immich + its ML container + Jellyfin + n8n already live here. Every new container gets a memory limit; the aligner processes one file at a time.
-- Stacks are Dockhand-managed (environment "Homelab"), one compose project per stack. **Superseded:** this project is now an **Electron desktop app** instead of a Docker stack (see §3) — no `lmsync` compose project is planned.
+- Stacks are Dockhand-managed (environment "Homelab"), one compose project per stack. **Superseded:** this project is now an **Electron desktop app** instead of a Docker stack (see §3) — no `lmplayer` compose project is planned.
 - **Electron desktop app:** replaces the planned web app + Docker stack. Runs on the user's desktop PC (Windows/macOS/Linux); no server, Traefik or Cloudflare Access layer for v1. Media remains reachable via local paths (e.g. NAS mounts such as `/mnt/hdrive/...`).
-- Reverse proxy: **Traefik v3.7** on the shared **`internal`** docker network (172.18.0.0/16). Services join `internal` and get Traefik labels; hostnames follow the `<name>-l.brekke-peer.com` pattern, gated by Cloudflare Access. Suggested hostname: `lmsync-l.brekke-peer.com` (confirm it's free; note Jellyfin's is `jellyfin-lp`, not `-l`).
+- Reverse proxy: **Traefik v3.7** on the shared **`internal`** docker network (172.18.0.0/16). Services join `internal` and get Traefik labels; hostnames follow the `<name>-l.brekke-peer.com` pattern, gated by Cloudflare Access. Suggested hostname: `lmplayer-l.brekke-peer.com` (confirm it's free; note Jellyfin's is `jellyfin-lp`, not `-l`).
 - **Immich** (v3, `immich-server`): on `internal` + `database` networks, port 2283, hostname `immich-l.brekke-peer.com`. Library on the host at:
   `/mnt/hdrive/docker/volumes/immich_data/_data/library` (its `/data/library`).
 - **Jellyfin** (`jellyfin/jellyfin:latest`): on `internal`, port 8096, hostname `jellyfin-lp.brekke-peer.com`. Media on the host at:
@@ -37,15 +37,15 @@ Historical context from the Nov 8, 2026 verification — the v1 build is now an 
 Desktop **Electron app** (main process + React renderer) + analyzer module + on-disk cache. All media access is **read-only**; the app never writes into the media/library folders.
 
 ```
-lmsync (Electron app, desktop)
+lmplayer (Electron app, desktop)
 ├── app      Electron main process (Node/TypeScript) — window, native file pickers, drag-and-drop, IPC to analyzer, playback protocol, cache; React renderer bundled in
 ├── analyzer Analyzer module — ffmpeg + fpcalc (Chromaprint); runs in the Electron main process (or as a subprocess); interface kept stable so it can later move to a NodeJS server in the cloud
-└── cache    Electron user data dir (Linux: `~/.config/lmsync`, macOS: `~/Library/Application Support/lmsync`, Windows: `%APPDATA%\lmsync`) — analyzed-content cache + alignment JSONs + SQLite index
+└── cache    Electron user data dir (Linux: `~/.config/lmplayer`, macOS: `~/Library/Application Support/lmplayer`, Windows: `%APPDATA%\lmplayer`) — analyzed-content cache + alignment JSONs + SQLite index
 ```
 
 - v1 media sources: **local files** the user adds — choreography `.lrc`, track MP3s, masterclass/self videos — by dropping them anywhere on the window or via **Add files…** (native picker; accepts MP4, M4V, MOV, MKV, WebM, AVI, WMV, MPG, TS, 3GP, FLV, MP3, LRC). Accessed read-only through Electron `fs`.
 - Immich (self-videos): reachable via the Immich API (`http://immich:2283/api`, header `x-api-key`) or local library path, read-only, from inside the desktop app.
-- No Docker/Traefik/Cloudflare Access layer for v1: the desktop app authenticates via the OS user session. The planned `lmsync` Dockhand stack, Traefik labels and Access policy are superseded.
+- No Docker/Traefik/Cloudflare Access layer for v1: the desktop app authenticates via the OS user session. The planned `lmplayer` Dockhand stack, Traefik labels and Access policy are superseded.
 
 **Analyzer/UI separation:** the analyzer is a standalone module behind a stable interface — given a video file + a list of MP3 tracks, produce the alignment JSON (§4.1) + match report. The Electron UI talks to it over IPC today; if the analyzer later moves to a NodeJS server in the cloud, only the transport behind that interface changes. C++ libraries via Node C bindings (N-API) may be used for native audio processing later; fpcalc/Chromaprint stays the local v1 path.
 
@@ -120,7 +120,7 @@ A correction is keyed by `videoPath` + `trackKey`; re-saving replaces it. An abs
 
 ### 4.3 Analyzed-content cache (v1)
 
-Everything derived lives under `cache/` in the Electron user data dir (Linux `~/.config/lmsync`, macOS `~/Library/Application Support/lmsync`, Windows `%APPDATA%\\lmsync`). Entries are named only from SHA-256 digests and the aligner version, so names are valid on every OS.
+Everything derived lives under `cache/` in the Electron user data dir (Linux `~/.config/lmplayer`, macOS `~/Library/Application Support/lmplayer`, Windows `%APPDATA%\\lmplayer`). Entries are named only from SHA-256 digests and the aligner version, so names are valid on every OS.
 
 - `hashes.json` — file SHA-256 remembered by path + size + mtime, so a large video is hashed once.
 - `features/<sha>__<ver>.json` — fingerprint series + energy envelope of a video soundtrack or an MP3.
@@ -164,7 +164,7 @@ Desktop app (Electron main process + React renderer); one *session* = the curren
 - **Layout:** one strict grid of tiles — a tile per video plus the choreography tile — with no sidebar. The choreography tile lists the current track's LRC lines (active line highlighted, auto-scrolling; lines are **clickable → seek all panes** to that cue) and, below, the pooled track list: per track the MP3 / LRC present or missing, a remove button for each file, and each video's match status.
 - **Coaching controls:** track quick-jump (prev/next), loop current LRC block (between this line's timestamp and the next), ±5 s skip, playback speed (0.5/0.75/1/1.25), a per-track confidence badge (from alignment JSON) so Hank knows which syncs to distrust.
 - **Alignment editor:** a track name in the choreography tile's track table is a link. Clicking a track other than the active one jumps the master clock to that track's start; clicking the active track opens the editor (§6.3) so a wrong or missing match can be corrected by hand. A track with no start yet opens the editor directly, since there is nowhere to jump.
-- **Media serving:** the app plays user-selected local files directly (Electron `<video>` playback; use a custom `lmsync://` asset protocol in the main process when serving Immich originals through the API instead of local paths). **Codec caveat:** phone videos may be HEVC — Safari plays it, Chrome largely doesn't. If Phase 0 confirms HEVC self-videos, the analyzer pre-generates 720p H.264 proxies into the cache dir (proxies only for self-videos, ~a few hundred MB each, with a config cap) and the player prefers the proxy for the self pane.
+- **Media serving:** the app plays user-selected local files directly (Electron `<video>` playback; use a custom `lmplayer://` asset protocol in the main process when serving Immich originals through the API instead of local paths). **Codec caveat:** phone videos may be HEVC — Safari plays it, Chrome largely doesn't. If Phase 0 confirms HEVC self-videos, the analyzer pre-generates 720p H.264 proxies into the cache dir (proxies only for self-videos, ~a few hundred MB each, with a config cap) and the player prefers the proxy for the self pane.
 
 - **Adding files (v1):** drop any supported file anywhere on the window, or use **Add files…** (native multi-select dialog, filters for all supported / videos / MP3 / LRC / all files). Dropped paths are resolved with `webUtils.getPathForFile` in the preload. Videos accept MP4, M4V, MOV, MKV, WebM, AVI, WMV, MPG/MPEG, TS, 3GP and FLV (playback still depends on Chromium codecs; alignment only needs the audio to decode).
 - **Cache:** analyzed content is saved to the cache folder, keyed by SHA-256 (§4.3), and reused when the same files are added again.
@@ -193,13 +193,13 @@ Opened by clicking the **active** track's name in the track table (only for trac
 
 No HTTP API in v1 — the Electron main process exposes an internal IPC surface between renderer and main/analyzer.
 
-- `lmsync:analyze` `{videoPath, fileName, tracks: [{trackKey, trackNo, mp3Path}], manualStarts: [{trackKey, startSec, method, confidence}]}` — run the alignment job (main → analyzer module, serialized); returns alignment JSON + match report; progress is pushed on `lmsync:analyze-progress`
-- `lmsync:alignTrack` `{videoPath, mp3Path, startSec, fallbackVideos: [{videoPath, startSec}]}` — guided reanalysis for the alignment editor (§5 step 6); `fallbackVideos` are other videos already aligned for the same track. Returns `{startSec, matched, method, confidence, searchedFromSec, searchedToSec, referenceVideoPath, reason}`; `referenceVideoPath` is set when another video's audio produced the match. Shares the analyzer's one-job-at-a-time queue.
-- `lmsync:lrc` `path` — parsed LRC `{cues: [{timeSec, text}]}`
-- `lmsync:pickFiles` — native multi-select dialog; `lmsync:exists` — which paths still exist
-- `lmsync:workspace:load` / `:save` — the auto-saved working workspace; `:open` / `:saveAs` — workspace files chosen by the user
-- `lmsync:cache:clear`
-- Media: user-added local files are played through a `lmsync://` protocol handler that supports Range requests (needed for seeking).
+- `lmplayer:analyze` `{videoPath, fileName, tracks: [{trackKey, trackNo, mp3Path}], manualStarts: [{trackKey, startSec, method, confidence}]}` — run the alignment job (main → analyzer module, serialized); returns alignment JSON + match report; progress is pushed on `lmplayer:analyze-progress`
+- `lmplayer:alignTrack` `{videoPath, mp3Path, startSec, fallbackVideos: [{videoPath, startSec}]}` — guided reanalysis for the alignment editor (§5 step 6); `fallbackVideos` are other videos already aligned for the same track. Returns `{startSec, matched, method, confidence, searchedFromSec, searchedToSec, referenceVideoPath, reason}`; `referenceVideoPath` is set when another video's audio produced the match. Shares the analyzer's one-job-at-a-time queue.
+- `lmplayer:lrc` `path` — parsed LRC `{cues: [{timeSec, text}]}`
+- `lmplayer:pickFiles` — native multi-select dialog; `lmplayer:exists` — which paths still exist
+- `lmplayer:workspace:load` / `:save` — the auto-saved working workspace; `:open` / `:saveAs` — workspace files chosen by the user
+- `lmplayer:cache:clear`
+- Media: user-added local files are played through a `lmplayer://` protocol handler that supports Range requests (needed for seeking).
 
 Auth: none in-app — the desktop app authenticates via the OS user session. No public routes.
 

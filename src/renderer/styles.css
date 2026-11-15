@@ -1,10 +1,12 @@
 :root {
-  --background: #0f1115;
-  --foreground: #e8eaf0;
-  --muted: #9aa3b2;
-  --card: #171a21;
-  --border: #262b36;
-  --primary: #4f8cff;
+  --background: #0d0d0d;
+  --foreground: #f5f5f5;
+  --muted: #a1a1aa;
+  --card: #18181b;
+  --border: #27272a;
+  --primary: #ff7f50;
+  --on-primary: #0d0d0d;
+  --manual: #4f8cff;
   --ok: #3ecf8e;
   --low: #f5a524;
   --bad: #f31260;
@@ -55,7 +57,7 @@ button:disabled {
 button.primary,
 .file-button.primary {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 h2 {
@@ -146,10 +148,11 @@ h2 {
 
 .release-row.selected {
   background: var(--primary);
+  color: var(--on-primary);
 }
 
 .release-row.selected .dim {
-  color: #dbe7ff;
+  color: rgba(13, 13, 13, 0.7);
 }
 
 .content {
@@ -164,7 +167,7 @@ h2 {
 .message {
   margin-bottom: 0;
   padding: 8px 12px;
-  background: #3a2d12;
+  background: #3a2a12;
   border: 1px solid var(--low);
   border-radius: var(--radius);
   cursor: pointer;
@@ -321,7 +324,7 @@ h2 {
 
 .lrc-line.active {
   color: var(--foreground);
-  background: rgba(79, 140, 255, 0.2);
+  background: rgba(255, 127, 80, 0.2);
   border-left-color: var(--primary);
   font-weight: 600;
 }
@@ -351,6 +354,7 @@ h2 {
 
 .scrubber {
   width: 100%;
+  accent-color: var(--primary);
 }
 
 .transport-row {
@@ -402,6 +406,11 @@ button.play {
   border-radius: var(--radius);
 }
 
+.topbar .logo {
+  width: 28px;
+  height: 28px;
+}
+
 .topbar h1 {
   margin: 0 8px 0 0;
   font-size: 16px;
@@ -420,7 +429,7 @@ button.play {
   justify-content: center;
   border: 3px dashed var(--primary);
   border-radius: var(--radius);
-  background: rgba(15, 17, 21, 0.8);
+  background: rgba(13, 13, 13, 0.8);
   font-size: 22px;
   pointer-events: none;
   z-index: 10;
@@ -587,7 +596,7 @@ button.tiny {
 }
 
 .badge.manual {
-  background: var(--primary);
+  background: var(--manual);
   color: #fff;
 }
 
@@ -768,7 +777,7 @@ button.track-link.active {
   min-width: 26px;
   border: 2px solid var(--primary);
   border-radius: 7px;
-  background: rgba(79, 140, 255, 0.22);
+  background: rgba(255, 127, 80, 0.22);
   cursor: grab;
   overflow: hidden;
   outline: none;
@@ -776,8 +785,8 @@ button.track-link.active {
 
 .align-ring:hover,
 .align-ring:focus-visible {
-  background: rgba(79, 140, 255, 0.32);
-  box-shadow: 0 0 0 2px rgba(79, 140, 255, 0.35);
+  background: rgba(255, 127, 80, 0.32);
+  box-shadow: 0 0 0 2px rgba(255, 127, 80, 0.35);
 }
 
 .align-ring:active {
@@ -792,7 +801,7 @@ button.track-link.active {
 .align-ring.unset {
   border-style: dashed;
   border-color: var(--muted);
-  background: rgba(154, 163, 178, 0.12);
+  background: rgba(161, 161, 170, 0.12);
 }
 
 .align-ring.overflow {

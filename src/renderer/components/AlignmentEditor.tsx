@@ -153,7 +153,7 @@ function VideoPreview(props: {
         ) : (
           <video
             ref={ref}
-            src={`lmsync://local/${encodeURIComponent(video.path)}`}
+            src={`lmplayer://local/${encodeURIComponent(video.path)}`}
             muted={muted || (playing && !lead)}
             playsInline
             preload="metadata"
@@ -348,7 +348,7 @@ export function AlignmentEditor(props: AlignmentEditorProps) {
   // The track's MP3 length sets the ring's width.
   useEffect(() => {
     if (!track.mp3Path) return;
-    const audio = new Audio(`lmsync://local/${encodeURIComponent(track.mp3Path)}`);
+    const audio = new Audio(`lmplayer://local/${encodeURIComponent(track.mp3Path)}`);
     const onMetadata = () => {
       if (Number.isFinite(audio.duration)) setMp3DurationSec(audio.duration);
     };

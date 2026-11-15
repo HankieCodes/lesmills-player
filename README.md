@@ -1,4 +1,4 @@
-# LM Sync
+# Les Mills Player
 
 Aligns Les Mills release MP3s to recordings of a class being taught (and to masterclass videos) with local audio fingerprinting, then plays the videos and the LRC choreography in sync. Electron desktop app; spec in [PLAN.md](PLAN.md).
 
@@ -24,7 +24,7 @@ Confidence thresholds (`src/analyzer/status.ts`: ≥ 0.6 ok, 0.3–0.6 low, belo
 
 ## Troubleshooting
 
-The app writes `%APPDATA%\lmsync\logs\main.log` (Linux: `~/.config/lmsync/logs/main.log`) with startup info, renderer console output and analysis errors. `F12` / `Ctrl+Shift+I` toggles DevTools; `--devtools` opens them at launch.
+The app writes `%APPDATA%\lmplayer\logs\main.log` (Linux: `~/.config/lmplayer/logs/main.log`) with startup info, renderer console output and analysis errors. `F12` / `Ctrl+Shift+I` toggles DevTools; `--devtools` opens them at launch.
 
 ## Development
 
@@ -36,16 +36,28 @@ pnpm lint
 pnpm typecheck
 
 # end-to-end alignment test on synthetic audio (needs real binaries)
-LMSYNC_FFMPEG=/path/to/ffmpeg LMSYNC_FPCALC=/path/to/fpcalc pnpm test
+LMPLAYER_FFMPEG=/path/to/ffmpeg LMPLAYER_FPCALC=/path/to/fpcalc pnpm test
 ```
 
 ## Windows build
 
 ```bash
-pnpm dist:win     # downloads ffmpeg.exe + fpcalc.exe into resources/win, builds, writes dist/LM-Sync-<version>-win-x64.zip
+pnpm dist:win     # downloads ffmpeg.exe + fpcalc.exe into resources/win, builds, writes dist/lmplayer-<version>-win-x64.zip
 ```
 
-The zip is unpacked-and-run (`LM Sync.exe`); ffmpeg and fpcalc ship inside it. It is unsigned, so SmartScreen will warn. An NSIS installer needs Wine when cross-building on Linux, so only the zip is produced here.
+The zip is unpacked-and-run (`lmplayer.exe`); ffmpeg and fpcalc ship inside it. It is unsigned, so SmartScreen will warn. An NSIS installer needs Wine when cross-building on Linux, so only the zip is produced here.
+
+## macOS build
+
+```bash
+pnpm dist:mac     # must run on a Mac; writes dist/lmplayer-<version>-mac-<arch>.zip containing lmplayer.app
+```
+
+The macOS build does not bundle ffmpeg or fpcalc, so they must be on `PATH` (for example `brew install ffmpeg chromaprint`).
+
+## Branding
+
+`resources/logo.svg` is the logo (a tape reel with a play button, in the same coral `#ff7f50` accent as LM Lyrics). `pnpm icon` renders it to `resources/icon.png`, which electron-builder uses for the app icon.
 
 ## Layout
 

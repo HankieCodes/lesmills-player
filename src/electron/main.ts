@@ -17,7 +17,7 @@ let mainWindow: BrowserWindow | null = null;
 let analysisQueue: Promise<unknown> = Promise.resolve();
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: "lmsync", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+  { scheme: "lmplayer", privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
 ]);
 
 function binaryPath(name: "ffmpeg" | "fpcalc"): string {
@@ -32,7 +32,7 @@ function getAnalyzer(): Analyzer {
     ffmpegPath: binaryPath("ffmpeg"),
     fpcalcPath: binaryPath("fpcalc"),
     cacheDir: getCacheDir(app.getPath("userData")),
-    onProgress: (progress) => mainWindow?.webContents.send("lmsync:analyze-progress", progress),
+    onProgress: (progress) => mainWindow?.webContents.send("lmplayer:analyze-progress", progress),
   });
   return analyzer;
 }
@@ -40,7 +40,7 @@ function getAnalyzer(): Analyzer {
 const workingWorkspacePath = () => path.join(app.getPath("userData"), "workspace.json");
 
 const dotless = (extensions: string[]) => extensions.map((e) => e.slice(1));
-const WORKSPACE_FILTER = { name: "LM Sync workspace", extensions: ["json"] };
+const WORKSPACE_FILTER = { name: "Les Mills Player workspace", extensions: ["json"] };
 
 /** A file body as a web stream, optionally just one byte range. */
 function fileBody(filePath: string, range?: ByteRange): ReadableStream<Uint8Array> {
@@ -49,7 +49,7 @@ function fileBody(filePath: string, range?: ByteRange): ReadableStream<Uint8Arra
 }
 
 function registerMediaProtocol(): void {
-  protocol.handle("lmsync", async (request) => {
+  protocol.handle("lmplayer", async (request) => {
     const url = new URL(request.url);
     let filePath: string;
     try {
@@ -104,8 +104,9 @@ function createWindow(): void {
     height: 1000,
     minWidth: 900,
     minHeight: 600,
-    title: "LM Sync",
-    backgroundColor: "#0f1115",
+    title: "Les Mills Player",
+    backgroundColor: "#0d0d0d",
+    icon: path.join(__dirname, "..", "renderer", "icon.png"),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -137,7 +138,7 @@ function createWindow(): void {
       event.preventDefault();
     }
   });
-  if (process.argv.includes("--devtools") || process.env.LMSYNC_DEVTOOLS === "1") {
+  if (process.argv.includes("--devtools") || process.env.LMPLAYER_DEVTOOLS === "1") {
     wc.once("did-finish-load", () => wc.openDevTools({ mode: "detach" }));
   }
 
@@ -149,7 +150,7 @@ function createWindow(): void {
 function registerIpc(): void {
   const dialogFor = <T>(show: (parent: BrowserWindow | undefined) => Promise<T>) => show(mainWindow ?? undefined);
 
-  ipcMain.handle("lmsync:pickFiles", async () => {
+  ipcMain.handle("lmplayer:pickFiles", async () => {
     const result = await dialogFor((parent) => {
       const options: Electron.OpenDialogOptions = {
         title: "Add videos, MP3s and LRC files",
@@ -167,14 +168,14 @@ function registerIpc(): void {
     return result.canceled ? [] : result.filePaths;
   });
 
-  ipcMain.handle("lmsync:exists", async (_event, paths: string[]) => {
+  ipcMain.handle("lmplayer:exists", async (_event, paths: string[]) => {
     const entries = await Promise.all(
       paths.map(async (p) => [p, await fs.access(p).then(() => true, () => false)] as const),
     );
     return Object.fromEntries(entries);
   });
 
-  ipcMain.handle("lmsync:lrc", (_event, lrcPath: string) => getAnalyzer().loadLrc(lrcPath));
+  ipcMain.handle("lmplayer:lrc", (_event, lrcPath: string) => getAnalyzer().loadLrc(lrcPath));
 
   // One analysis job at a time (see PLAN §10); the editor's guided reanalysis shares the queue.
   const enqueue = <T>(label: string, job: () => Promise<T>): Promise<T> => {
@@ -183,32 +184,32 @@ function registerIpc(): void {
     return next;
   };
 
-  ipcMain.handle("lmsync:analyze", (_event, input: AnalyzeInput) => {
+  ipcMain.handle("lmplayer:analyze", (_event, input: AnalyzeInput) => {
     log("info", `analyze ${input.videoPath} against ${input.tracks.length} track(s)`);
     return enqueue("analysis failed", () => getAnalyzer().analyzeVideo(input));
   });
 
-  ipcMain.handle("lmsync:alignTrack", (_event, input: GuidedAlignInput) => {
+  ipcMain.handle("lmplayer:alignTrack", (_event, input: GuidedAlignInput) => {
     log("info", `align ${input.mp3Path} near ${input.startSec.toFixed(2)} s in ${input.videoPath}`);
     return enqueue("guided alignment failed", () => getAnalyzer().alignTrackNear(input));
   });
 
-  ipcMain.handle("lmsync:workspace:load", async () => parseWorkspace(await readJson<unknown>(workingWorkspacePath())));
-  ipcMain.handle("lmsync:workspace:save", (_event, workspace: WorkspaceFile) => writeJson(workingWorkspacePath(), workspace));
+  ipcMain.handle("lmplayer:workspace:load", async () => parseWorkspace(await readJson<unknown>(workingWorkspacePath())));
+  ipcMain.handle("lmplayer:workspace:save", (_event, workspace: WorkspaceFile) => writeJson(workingWorkspacePath(), workspace));
 
-  ipcMain.handle("lmsync:workspace:open", async () => {
+  ipcMain.handle("lmplayer:workspace:open", async () => {
     const options: Electron.OpenDialogOptions = { title: "Open workspace", properties: ["openFile"], filters: [WORKSPACE_FILTER] };
     const result = await dialogFor((parent) => (parent ? dialog.showOpenDialog(parent, options) : dialog.showOpenDialog(options)));
     if (result.canceled || result.filePaths.length === 0) return null;
     const workspace = parseWorkspace(await readJson<unknown>(result.filePaths[0]));
-    if (workspace === null) throw new Error(`${path.basename(result.filePaths[0])} is not an LM Sync workspace file.`);
+    if (workspace === null) throw new Error(`${path.basename(result.filePaths[0])} is not an Les Mills Player workspace file.`);
     return { path: result.filePaths[0], workspace };
   });
 
-  ipcMain.handle("lmsync:workspace:saveAs", async (_event, workspace: WorkspaceFile) => {
+  ipcMain.handle("lmplayer:workspace:saveAs", async (_event, workspace: WorkspaceFile) => {
     const options: Electron.SaveDialogOptions = {
       title: "Save a copy of the workspace",
-      defaultPath: "class.lmsync.json",
+      defaultPath: "class.lmplayer.json",
       filters: [WORKSPACE_FILTER],
     };
     const result = await dialogFor((parent) => (parent ? dialog.showSaveDialog(parent, options) : dialog.showSaveDialog(options)));
@@ -217,14 +218,14 @@ function registerIpc(): void {
     return result.filePath;
   });
 
-  ipcMain.handle("lmsync:cache:clear", () => clearCache(getCacheDir(app.getPath("userData"))));
+  ipcMain.handle("lmplayer:cache:clear", () => clearCache(getCacheDir(app.getPath("userData"))));
 }
 
 process.on("uncaughtException", (error) => log("error", "uncaughtException", error));
 process.on("unhandledRejection", (reason) => log("error", "unhandledRejection", reason));
 
 void app.whenReady().then(() => {
-  log("info", `LM Sync ${app.getVersion()} electron ${process.versions.electron} ${process.platform} ${process.arch}`);
+  log("info", `Les Mills Player ${app.getVersion()} electron ${process.versions.electron} ${process.platform} ${process.arch}`);
   log("info", `packaged=${app.isPackaged} resources=${process.resourcesPath} log=${logPath()}`);
   registerMediaProtocol();
   registerIpc();

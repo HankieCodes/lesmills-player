@@ -6,7 +6,7 @@ import { cachedSha256, readMatch, sha256File, writeMatch } from "./cache";
 
 const dirs: string[] = [];
 function tmp(): string {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), "lmsync-cache-"));
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "lmplayer-cache-"));
   dirs.push(d);
   return d;
 }

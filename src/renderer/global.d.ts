@@ -1,7 +1,7 @@
-import type { LmsyncApi } from "../electron/preload";
+import type { LmplayerApi } from "../electron/preload";
 
 declare global {
   interface Window {
-    lmsync: LmsyncApi;
+    lmplayer: LmplayerApi;
   }
 }

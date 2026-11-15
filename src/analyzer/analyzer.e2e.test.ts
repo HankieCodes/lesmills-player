@@ -8,11 +8,11 @@ import type { AnalyzeTrackInput } from "../shared/types";
 
 /**
  * End-to-end alignment test on synthetic audio. Needs real ffmpeg + fpcalc:
- *   LMSYNC_FFMPEG=/path/ffmpeg LMSYNC_FPCALC=/path/fpcalc pnpm test
+ *   LMPLAYER_FFMPEG=/path/ffmpeg LMPLAYER_FPCALC=/path/fpcalc pnpm test
  * Skipped otherwise.
  */
-const ffmpeg = process.env.LMSYNC_FFMPEG;
-const fpcalc = process.env.LMSYNC_FPCALC;
+const ffmpeg = process.env.LMPLAYER_FFMPEG;
+const fpcalc = process.env.LMPLAYER_FPCALC;
 const RATE = 22050;
 
 function mulberry32(seed: number): () => number {
@@ -95,7 +95,7 @@ function writeWav(file: string, samples: Float32Array): void {
 }
 
 describe.skipIf(!ffmpeg || !fpcalc)("Analyzer end-to-end (synthetic audio)", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lmsync-e2e-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lmplayer-e2e-"));
   const cacheDir = path.join(dir, "cache");
   const releaseDir = path.join(dir, "tracks");
   const videoPath = path.join(dir, "class.mp4");

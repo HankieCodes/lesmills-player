@@ -204,7 +204,7 @@ export function App() {
 
   // Workspace: load the last one on launch, then auto-save every change.
   useEffect(() => {
-    void window.lmsync.workspace.load().then((saved) => {
+    void window.lmplayer.workspace.load().then((saved) => {
       if (saved) setWorkspace(saved);
       setReady(true);
     });
@@ -212,7 +212,7 @@ export function App() {
 
   useEffect(() => {
     if (!ready) return;
-    const timer = setTimeout(() => void window.lmsync.workspace.save(workspace), SAVE_DEBOUNCE_MS);
+    const timer = setTimeout(() => void window.lmplayer.workspace.save(workspace), SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [ready, workspace]);
 
@@ -235,7 +235,7 @@ export function App() {
       return;
     }
     let cancelled = false;
-    void window.lmsync.exists(paths).then((found) => {
+    void window.lmplayer.exists(paths).then((found) => {
       if (!cancelled) setMissing(new Set(paths.filter((p) => !found[p])));
     });
     return () => {
@@ -246,7 +246,7 @@ export function App() {
   useEffect(() => {
     for (const lrcPath of workspace.lrcs) {
       if (lrcs[lrcPath] || missing.has(lrcPath)) continue;
-      void window.lmsync.loadLrc(lrcPath).then((parsed) => {
+      void window.lmplayer.loadLrc(lrcPath).then((parsed) => {
         if (parsed) setLrcs((prev) => ({ ...prev, [lrcPath]: parsed }));
         else setMessage(`${fileNameOf(lrcPath)} could not be read as an LRC file.`);
       });
@@ -273,7 +273,7 @@ export function App() {
         ...prev,
         [videoPath]: { ...(prev[videoPath] ?? NO_ANALYSIS), running: { message: "Queued…", fraction: 0 }, error: null },
       }));
-      window.lmsync
+      window.lmplayer
         .analyze({ videoPath, fileName: fileNameOf(videoPath), tracks: analyzable, manualStarts })
         .then((result) =>
           setAnalysis((prev) => ({
@@ -292,7 +292,7 @@ export function App() {
 
   useEffect(
     () =>
-      window.lmsync.onProgress((progress) =>
+      window.lmplayer.onProgress((progress) =>
         setAnalysis((prev) => {
           const current = prev[progress.videoPath];
           if (!current?.running) return prev;
@@ -328,7 +328,7 @@ export function App() {
 
   const dropFiles = useCallback(
     (files: FileList | null) => {
-      if (files) addFiles(Array.from(files, (file) => window.lmsync.pathForFile(file)).filter((p) => p !== ""));
+      if (files) addFiles(Array.from(files, (file) => window.lmplayer.pathForFile(file)).filter((p) => p !== ""));
     },
     [addFiles],
   );
@@ -365,7 +365,7 @@ export function App() {
 
   const openWorkspace = useCallback(async () => {
     try {
-      const opened = await window.lmsync.workspace.open();
+      const opened = await window.lmplayer.workspace.open();
       if (opened) {
         replaceWorkspace(opened.workspace);
         setMessage(`Opened ${fileNameOf(opened.path)}.`);
@@ -376,14 +376,14 @@ export function App() {
   }, [replaceWorkspace]);
 
   const saveCopy = useCallback(async () => {
-    const saved = await window.lmsync.workspace.saveAs(workspace);
+    const saved = await window.lmplayer.workspace.saveAs(workspace);
     if (saved) setMessage(`Saved ${saved}`);
   }, [workspace]);
 
-  const pickFiles = useCallback(async () => addFiles(await window.lmsync.pickFiles()), [addFiles]);
+  const pickFiles = useCallback(async () => addFiles(await window.lmplayer.pickFiles()), [addFiles]);
 
   const clearCache = useCallback(async () => {
-    await window.lmsync.clearCache();
+    await window.lmplayer.clearCache();
     setAnalysis({});
     setMessage("Analysis cache cleared; videos will be analyzed again.");
   }, []);
@@ -423,7 +423,7 @@ export function App() {
             return startSec === undefined ? [] : [{ videoPath: v.path, startSec }];
           });
         try {
-          const result = await window.lmsync.alignTrack({
+          const result = await window.lmplayer.alignTrack({
             videoPath: edit.videoPath,
             mp3Path: track.mp3Path,
             startSec: edit.startSec,
@@ -567,7 +567,8 @@ export function App() {
       }}
     >
       <header className="topbar">
-        <h1>LM Sync</h1>
+        <img className="logo" src="./logo.svg" alt="" />
+        <h1>Les Mills Player</h1>
         <button className="primary" onClick={() => void pickFiles()}>
           Add files…
         </button>

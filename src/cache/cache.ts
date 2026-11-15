@@ -3,9 +3,9 @@ import { createReadStream, promises as fs } from "fs";
 import * as path from "path";
 import type { Alignment, AlignmentMethod, ParsedLrc } from "../shared/types";
 
-/** The cache lives in the Electron userData dir; LMSYNC_CACHE_DIR overrides it (tests, scripts). */
+/** The cache lives in the Electron userData dir; LMPLAYER_CACHE_DIR overrides it (tests, scripts). */
 export function getCacheDir(userDataDir: string): string {
-  const fromEnv = process.env.LMSYNC_CACHE_DIR;
+  const fromEnv = process.env.LMPLAYER_CACHE_DIR;
   return fromEnv && fromEnv.length > 0 ? fromEnv : userDataDir;
 }
 

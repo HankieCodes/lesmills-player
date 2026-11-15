@@ -249,7 +249,7 @@ export class Analyzer {
    * the class recording even when it does not share the release MP3.
    */
   async alignTrackNear(input: GuidedAlignInput): Promise<GuidedAlignmentResult> {
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lmsync-"));
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lmplayer-"));
     try {
       const videoSha = await cachedSha256(input.videoPath, this.cacheDir);
       const mp3Sha = await cachedSha256(input.mp3Path, this.cacheDir);
@@ -289,7 +289,7 @@ export class Analyzer {
 
     report("Reading video…", 0);
     const videoSha = await cachedSha256(videoPath, this.cacheDir);
-    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lmsync-"));
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lmplayer-"));
     try {
       let videoFeatures: AudioFeatures | null = null;
       const getVideoFeatures = async () => {

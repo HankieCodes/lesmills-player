@@ -10,7 +10,7 @@ function showFatal(text: string): void {
     el.innerHTML = "";
     const pre = document.createElement("pre");
     pre.className = "fatal";
-    pre.textContent = `LM Sync failed to start.\n\n${text}\n\nLog file: %APPDATA%\\lmsync\\logs\\main.log (press F12 for DevTools)`;
+    pre.textContent = `Les Mills Player failed to start.\n\n${text}\n\nLog file: %APPDATA%\\lmplayer\\logs\\main.log (press F12 for DevTools)`;
     el.appendChild(pre);
   }
 }
@@ -37,8 +37,8 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 window.addEventListener("error", (e) => showFatal(`${e.message}\n${e.filename}:${e.lineno}`));
 window.addEventListener("unhandledrejection", (e) => console.error("Unhandled rejection", e.reason));
 
-if (typeof window.lmsync === "undefined") {
-  showFatal("The preload bridge (window.lmsync) is missing, so the app cannot talk to the main process.");
+if (typeof window.lmplayer === "undefined") {
+  showFatal("The preload bridge (window.lmplayer) is missing, so the app cannot talk to the main process.");
 } else {
   createRoot(document.getElementById("root")!).render(
     <StrictMode>

@@ -1,7 +1,7 @@
 {
-  "name": "lmsync",
+  "name": "lmplayer",
   "version": "0.2.0",
-  "description": "LM Sync \u2014 align Les Mills release MP3s to teaching videos via audio fingerprinting, then play masterclass + self videos and LRC choreography in sync.",
+  "description": "Les Mills Player — align Les Mills release MP3s to teaching videos via audio fingerprinting, then play masterclass + self videos and LRC choreography in sync.",
   "main": "out/electron/main.js",
   "type": "commonjs",
   "scripts": {
@@ -14,10 +14,13 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json",
     "binaries:win": "node scripts/fetch-binaries.mjs",
-    "dist:win": "pnpm binaries:win && pnpm build && electron-builder --win --x64 --publish never"
+    "dist:win": "pnpm binaries:win && pnpm build && electron-builder --win --x64 --publish never",
+    "icon": "node scripts/build-icon.mjs",
+    "dist:mac": "pnpm build && electron-builder --mac --publish never"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^22.13.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
@@ -39,8 +42,8 @@
   },
   "author": "Hank",
   "build": {
-    "appId": "com.brekke-peer.lmsync",
-    "productName": "LM Sync",
+    "appId": "com.brekke-peer.lmplayer",
+    "productName": "lmplayer",
     "directories": {
       "output": "dist"
     },
@@ -69,6 +72,22 @@
       ],
       "signAndEditExecutable": false
     },
-    "artifactName": "LM-Sync-${version}-${os}-${arch}.${ext}"
+    "artifactName": "lmplayer-${version}-${os}-${arch}.${ext}",
+    "icon": "resources/icon.png",
+    "mac": {
+      "category": "public.app-category.video",
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "extendInfo": {
+        "CFBundleDisplayName": "Les Mills Player"
+      }
+    }
   }
 }

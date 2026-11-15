@@ -66,7 +66,7 @@ export function VideoTile(props: VideoTileProps) {
           <div className="video-note center">File not found:<br />{path}</div>
         ) : (
           <video
-            src={`lmsync://local/${encodeURIComponent(path)}`}
+            src={`lmplayer://local/${encodeURIComponent(path)}`}
             ref={(el) => props.registerRef(path, el)}
             muted={muted}
             playsInline
