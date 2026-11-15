@@ -1,21 +1,20 @@
 {
   "name": "lmsync",
   "version": "0.1.0",
-  "description": "LM Sync — align Les Mills release MP3s to teaching videos via audio fingerprinting, then play masterclass + self videos and LRC choreography in sync.",
+  "description": "LM Sync \u2014 align Les Mills release MP3s to teaching videos via audio fingerprinting, then play masterclass + self videos and LRC choreography in sync.",
   "main": "out/electron/main.js",
   "type": "commonjs",
   "scripts": {
-    "dev": "concurrently -n esbuild:dev,renderer:copy,electron:dev \"esbuild src/renderer/main.tsx --bundle --outdir=out/renderer --format=esm --watch\" \"node scripts/copy-renderer.mjs\" \"electron .\"",
-    "build": "tsc -p tsconfig.json && tsc -p tsconfig.preload.json && tsc -p tsconfig.renderer.json && esbuild src/renderer/main.tsx --bundle --outdir=out/renderer --format=esm && node scripts/copy-renderer.mjs",
+    "clean": "node -e \"require('fs').rmSync('out',{recursive:true,force:true})\"",
+    "build": "pnpm clean && tsc -p tsconfig.json && tsc -p tsconfig.renderer.json && pnpm bundle",
+    "bundle": "esbuild src/renderer/main.tsx --bundle --jsx=automatic --outdir=out/renderer --format=iife --platform=browser --target=chrome124 --minify && node scripts/copy-renderer.mjs",
+    "dev": "pnpm build && electron .",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint . --max-warnings=0",
-    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.preload.json && tsc -p tsconfig.renderer.json"
-  },
-  "dependencies": {
-    "electron": "^30.0.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json",
+    "binaries:win": "node scripts/fetch-binaries.mjs",
+    "dist:win": "pnpm binaries:win && pnpm build && electron-builder --win --x64 --publish never"
   },
   "devDependencies": {
     "@eslint/js": "^9.17.0",
@@ -23,17 +22,53 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "concurrently": "^9.1.2",
+    "electron": "^30.0.0",
+    "electron-builder": "^25.1.8",
     "esbuild": "^0.24.2",
     "eslint": "^9.17.0",
     "eslint-config-prettier": "^10.0.0",
     "eslint-plugin-react": "^7.37.0",
     "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^17.14.0",
     "prettier": "^3.4.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0",
     "vitest": "^2.1.9"
   },
-  "pnpm": {
-    "onlyBuiltDependencies": ["electron", "esbuild"]
+  "author": "Hank",
+  "build": {
+    "appId": "com.brekke-peer.lmsync",
+    "productName": "LM Sync",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/win",
+        "to": "bin",
+        "filter": [
+          "ffmpeg.exe",
+          "fpcalc.exe"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "artifactName": "LM-Sync-${version}-${os}-${arch}.${ext}"
   }
 }

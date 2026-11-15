@@ -1,65 +1,27 @@
-import { contextBridge, ipcRenderer } from "electron";
-import type { AnalyzeInput } from "../analyzer/analyzer";
-import type { Alignment, ParsedLrc, ReleaseFolder } from "../shared/types";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
+import type { AnalyzeInput, AnalyzeOutput, AnalyzeProgress } from "../analyzer/analyzer";
+import type { ReleaseFolder } from "../shared/types";
 
-export interface LmsyncApi {
+const api = {
   releases: {
-    list: (sourceFolders: string[]) => Promise<ReleaseFolder[]>;
-  };
-  analyze: {
-    run: (input: AnalyzeInput) => Promise<unknown>;
-  };
-  alignment: {
-    get: (key: string) => Promise<Alignment | null>;
-  };
-  lrc: {
-    get: (key: string) => Promise<ParsedLrc | null>;
-  };
+    list: (folders: string[]): Promise<ReleaseFolder[]> => ipcRenderer.invoke("lmsync:releases", folders),
+    pickFolder: (): Promise<string | null> => ipcRenderer.invoke("lmsync:pickFolder"),
+  },
+  analyze: (input: AnalyzeInput): Promise<AnalyzeOutput> => ipcRenderer.invoke("lmsync:analyze", input),
   cache: {
-    clear: () => Promise<void>;
-  };
-  file: {
-    getPathForFile: (file: File) => Promise<string>;
-  };
-  pick: {
-    video: () => Promise<{ canceled: boolean; filePath: string | null }>;
-  };
-  progress: {
-    on: (listener: (progress: unknown) => void) => () => void;
-  };
-}
-
-const api: LmsyncApi = {
-  releases: {
-    list: (sourceFolders: string[]) => ipcRenderer.invoke("lmsync:releases", sourceFolders),
+    clear: (): Promise<void> => ipcRenderer.invoke("lmsync:cache:clear"),
   },
-  analyze: {
-    run: (input: AnalyzeInput) => ipcRenderer.invoke("lmsync:analyze", input),
-  },
-  alignment: {
-    get: (key: string) => ipcRenderer.invoke("lmsync:alignment", key),
-  },
-  lrc: {
-    get: (key: string) => ipcRenderer.invoke("lmsync:lrc", key),
-  },
-  cache: {
-    clear: () => ipcRenderer.invoke("lmsync:cache:clear"),
-  },
-  file: {
-    getPathForFile: (file: File) => ipcRenderer.invoke("lmsync:getPathForFile", file),
-  },
-  pick: {
-    video: () => ipcRenderer.invoke("lmsync:pickVideo"),
-  },
-  progress: {
-    on: (listener: (progress: unknown) => void) => {
-      const handler = (_event: unknown, progress: unknown) => listener(progress);
-      ipcRenderer.on("lmsync:analyze-progress", handler);
-      return () => ipcRenderer.off("lmsync:analyze-progress", handler);
-    },
+  /** Must run in the preload: File objects cannot cross IPC. */
+  pathForFile: (file: File): string => webUtils.getPathForFile(file),
+  onProgress: (listener: (progress: AnalyzeProgress) => void): (() => void) => {
+    const handler = (_event: unknown, progress: AnalyzeProgress) => listener(progress);
+    ipcRenderer.on("lmsync:analyze-progress", handler);
+    return () => {
+      ipcRenderer.off("lmsync:analyze-progress", handler);
+    };
   },
 };
 
 contextBridge.exposeInMainWorld("lmsync", api);
 
-export type LmsyncApiBridge = typeof api;
+export type LmsyncApi = typeof api;

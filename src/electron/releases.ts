@@ -2,100 +2,79 @@ import * as fs from "fs";
 import * as path from "path";
 import type { ReleaseFolder, ReleaseIdentity, ReleaseTrack } from "../shared/types";
 
-const TRACK_EXTENSIONS = new Set(["mp3", "mp3"]);
-const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "m4v", "mkv", "webm", "avi"]);
+const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"]);
+const MAX_DEPTH = 4;
 
+/** "Les Mills BodyPump 131", "BODYPUMP_131", "BP-131" → program + release number. */
 export function parseReleaseFromFolderName(folderName: string): ReleaseIdentity {
-  const upper = folderName.trim().toUpperCase();
-  const trailing = /(?:^|[^A-Z0-9])([A-Z0-9]+)[^0-9]*?([0-9]{2,4})[^A-Z0-9]*$/.exec(upper);
-  if (trailing) {
-    const program = (trailing[1] ?? "").trim();
-    const release = trailing[2];
-    if (program.length > 0) {
-      return { program, release };
-    }
-  }
-  const fallback = /^([A-Z0-9]+)[_-]?([0-9]{2,4})$/i.exec(folderName.trim());
-  if (fallback) {
-    return { program: fallback[1].toUpperCase(), release: fallback[2] };
-  }
-  return { program: "UNKNOWN", release: "0" };
+  const cleaned = folderName
+    .replace(/[([{][^)\]}]*[)\]}]/g, " ")
+    .replace(/[_\-.]+/g, " ").replace(/\s+/g, " ").trim();
+  const match = /^(.*?)\s*(\d{2,3})(?!\d)[^\d]*$/.exec(cleaned);
+  if (match === null) return { program: "UNKNOWN", release: "0" };
+  const program = match[1]
+    .replace(/^les mills\s*/i, "")
+    .replace(/\s+/g, "")
+    .toUpperCase();
+  return { program: program.length > 0 ? program : "UNKNOWN", release: match[2] };
 }
 
-async function listFiles(dir: string, exts: Set<string>): Promise<string[]> {
-  const dirents = await fs.promises.readdir(dir, { withFileTypes: true });
-  const files: string[] = [];
-  for (const entry of dirents) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) continue;
-    const ext = entry.name.split(".").pop()?.toLowerCase() ?? "";
-    if (exts.has(ext)) files.push(full);
-  }
-  return files;
-}
-
-async function findMasterclassVideo(
-  dir: string,
-  program: string,
-  release: string,
-): Promise<string | null> {
-  const videos = await listFiles(dir, VIDEO_EXTENSIONS);
-  if (videos.length === 0) return null;
-  const needle = `${program}${release}`.toUpperCase();
-  const masterclass = videos.find((v) => v.toUpperCase().includes(needle)) ?? videos.find((v) => /masterclass|instruction/i.test(v));
-  return masterclass ?? (videos.length === 1 ? videos[0] : null);
-}
-
-async function scanDir(
-  sourceFolder: string,
-  depth: number,
-  found: ReleaseFolder[],
-): Promise<void> {
-  if (depth > 4) return;
-  let dirents;
+async function listDir(dir: string): Promise<fs.Dirent[]> {
   try {
-    dirents = await fs.promises.readdir(sourceFolder, { withFileTypes: true });
+    return await fs.promises.readdir(dir, { withFileTypes: true });
   } catch {
-    return;
-  }
-  for (const entry of dirents) {
-    if (!entry.isDirectory()) continue;
-    const child = path.join(sourceFolder, entry.name);
-    const childFiles = await listFiles(child, TRACK_EXTENSIONS);
-    const lrcs = await listFiles(child, new Set(["lrc"]));
-    const hasPair = childFiles.some((mp3) => {
-      const base = path.basename(mp3, ".mp3");
-      return lrcs.some((lrc) => path.basename(lrc) === `${base}.lrc`);
-    });
-    if (hasPair && lrcs.length > 0) {
-      const identity = parseReleaseFromFolderName(entry.name);
-      const mp3s = childFiles.map((mp3) => {
-        const base = path.basename(mp3, path.extname(mp3));
-        const trackNo = Number(/^(\d+)/.exec(base)?.[1] ?? "0");
-        return {
-          trackNo,
-          mp3Path: mp3,
-          lrcPath: path.join(path.dirname(mp3), `${base}.lrc`),
-        } satisfies ReleaseTrack;
-      });
-      mp3s.sort((a, b) => a.trackNo - b.trackNo);
-      found.push({
-        folderPath: child,
-        program: identity.program,
-        release: identity.release,
-        tracks: mp3s,
-        masterclassVideoPath: await findMasterclassVideo(child, identity.program, identity.release),
-      });
-    }
-    await scanDir(child, depth + 1, found);
+    return [];
   }
 }
 
-export async function scanReleaseFolders(sourceFolders: string[]): Promise<ReleaseFolder[]> {
-  const releases: ReleaseFolder[] = [];
-  for (const folder of sourceFolders) {
-    const absolute = path.resolve(folder);
-    await scanDir(absolute, 0, releases);
+function trackNumber(baseName: string): number | null {
+  const m = /^\s*(\d+)/.exec(baseName);
+  return m === null ? null : Number(m[1]);
+}
+
+async function inspectDir(dir: string): Promise<ReleaseFolder | null> {
+  const entries = await listDir(dir);
+  const files = entries.filter((e) => e.isFile()).map((e) => e.name);
+  const lrcByBase = new Map<string, string>();
+  for (const name of files) {
+    if (path.extname(name).toLowerCase() === ".lrc") lrcByBase.set(path.basename(name, path.extname(name)), name);
   }
-  return releases;
+  const tracks: ReleaseTrack[] = [];
+  for (const name of files) {
+    if (path.extname(name).toLowerCase() !== ".mp3") continue;
+    const base = path.basename(name, path.extname(name));
+    const lrc = lrcByBase.get(base);
+    const trackNo = trackNumber(base);
+    if (lrc === undefined || trackNo === null) continue;
+    tracks.push({ trackNo, mp3Path: path.join(dir, name), lrcPath: path.join(dir, lrc) });
+  }
+  if (tracks.length === 0) return null;
+  tracks.sort((a, b) => a.trackNo - b.trackNo);
+
+  const videos = files.filter((f) => VIDEO_EXTENSIONS.has(path.extname(f).toLowerCase()));
+  const identity = parseReleaseFromFolderName(path.basename(dir));
+  const masterclass = videos.find((v) => /master/i.test(v)) ?? (videos.length === 1 ? videos[0] : undefined);
+  return {
+    folderPath: dir,
+    program: identity.program,
+    release: identity.release,
+    tracks,
+    masterclassVideoPath: masterclass === undefined ? null : path.join(dir, masterclass),
+  };
+}
+
+async function walk(dir: string, depth: number, found: ReleaseFolder[]): Promise<void> {
+  const release = await inspectDir(dir);
+  if (release !== null) found.push(release);
+  if (depth >= MAX_DEPTH) return;
+  for (const entry of await listDir(dir)) {
+    if (entry.isDirectory() && !entry.name.startsWith(".")) await walk(path.join(dir, entry.name), depth + 1, found);
+  }
+}
+
+/** Find release folders (MP3s with same-named LRCs) in and below the given folders. Read-only. */
+export async function scanReleaseFolders(sourceFolders: string[]): Promise<ReleaseFolder[]> {
+  const found: ReleaseFolder[] = [];
+  for (const folder of sourceFolders) await walk(path.resolve(folder), 0, found);
+  return found.sort((a, b) => a.folderPath.localeCompare(b.folderPath));
 }

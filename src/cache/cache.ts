@@ -3,19 +3,10 @@ import { createReadStream, promises as fs } from "fs";
 import * as path from "path";
 import type { Alignment, ParsedLrc, ReleaseIdentity } from "../shared/types";
 
-export const ALIGNER_VERSION = "0.1.0";
-
-export function getCacheDir(): string {
+/** The cache lives in the Electron userData dir; LMSYNC_CACHE_DIR overrides it (tests, scripts). */
+export function getCacheDir(userDataDir: string): string {
   const fromEnv = process.env.LMSYNC_CACHE_DIR;
-  if (fromEnv && fromEnv.length > 0) return fromEnv;
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
-  if (process.platform === "win32") {
-    return path.join(process.env.APPDATA ?? path.join(home, "AppData", "Roaming"), "lmsync");
-  }
-  if (process.platform === "darwin") {
-    return path.join(home, "Library", "Application Support", "lmsync");
-  }
-  return path.join(home, ".config", "lmsync");
+  return fromEnv && fromEnv.length > 0 ? fromEnv : userDataDir;
 }
 
 export async function sha256File(filePath: string): Promise<string> {

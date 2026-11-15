@@ -1,16 +1,28 @@
-import type { Alignment, ParsedLrc } from "../shared/types";
+import type { Alignment, MatchReport, ParsedLrc, ReleaseFolder, VideoSource } from "../shared/types";
 
-export interface SessionVideo {
-  source: "self" | "masterclass";
-  videoPath: string;
-  videoFileName: string;
-  release: { program: string; release: string };
+export interface VideoTileState {
+  id: string;
+  source: VideoSource;
+  path: string;
+  fileName: string;
+  release: ReleaseFolder;
   alignment: Alignment;
-  lrc: ParsedLrc;
+  matchReport: MatchReport;
+  lrcs: Record<number, ParsedLrc>;
 }
 
-export type Tile =
-  | { id: string; kind: "video"; video: SessionVideo }
-  | { id: string; kind: "lrc"; lrc: ParsedLrc; label: string };
+export interface PendingTileState {
+  id: string;
+  fileName: string;
+  message: string;
+  fraction: number;
+  error: string | null;
+}
 
-export type VideoTile = Extract<Tile, { kind: "video" }>;
+/** A loop over one LRC block, expressed on the reference video's timeline. */
+export interface LoopRange {
+  startSec: number;
+  endSec: number;
+  trackNo: number;
+  cueIndex: number;
+}

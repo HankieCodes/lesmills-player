@@ -1,41 +1,45 @@
 import { useEffect, useRef } from "react";
-import { cueAt } from "../../analyzer/lrc";
 import type { LrcCue } from "../../shared/types";
 
 interface LrcScrollerProps {
+  title: string;
   cues: LrcCue[];
-  activeTimeSec: number;
-  onCueClick: (timeSec: number) => void;
+  /** Index of the active cue, or -1. */
+  activeIndex: number;
+  loopIndex: number | null;
+  onCueClick: (cue: LrcCue) => void;
 }
 
-export function LrcScroller({ cues, activeTimeSec, onCueClick }: LrcScrollerProps) {
-  const sorted = [...cues].sort((a, b) => a.timeSec - b.timeSec);
-  const active = cueAt(sorted, activeTimeSec);
-  const activeId = active ? `lrc-cue-${active.timeSec.toFixed(3)}` : null;
-  const listRef = useRef<HTMLDivElement>(null);
+export function LrcScroller({ title, cues, activeIndex, loopIndex, onCueClick }: LrcScrollerProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (activeId === null) return;
-    const el = listRef.current?.querySelector<HTMLElement>(`[id="${activeId}"]`);
-    el?.scrollIntoView({ block: "center" });
-  }, [activeId]);
+    const container = containerRef.current;
+    const line = container?.children[activeIndex + 1] as HTMLElement | undefined;
+    if (!container || !line) return;
+    container.scrollTo({ top: line.offsetTop - container.clientHeight / 2 + line.clientHeight / 2, behavior: "smooth" });
+  }, [activeIndex]);
 
   return (
-    <div className="tile lrc-tile" ref={listRef}>
-      {sorted.map((cue, index) => {
-        const isActive = active !== null && cue.timeSec === active.timeSec;
-        const id = `lrc-cue-${cue.timeSec.toFixed(3)}`;
-        return (
+    <div className="tile">
+      <div className="tile-header">{title}</div>
+      <div className="lrc-list" ref={containerRef}>
+        <div className="lrc-empty" hidden={cues.length > 0}>
+          Play or seek into a track to see its choreography.
+        </div>
+        {cues.map((cue, index) => (
           <div
-            key={`${id}-${index}`}
-            id={id}
-            className={`lrc-line${isActive ? " active" : ""}`}
-            onClick={() => onCueClick(cue.timeSec)}
+            key={`${cue.timeSec}-${index}`}
+            className={`lrc-line${index === activeIndex ? " active" : ""}${index === loopIndex ? " looping" : ""}`}
+            onClick={() => onCueClick(cue)}
           >
-            {cue.timeSec.toFixed(2)}s — {cue.text}
+            <span className="lrc-time">
+              {Math.floor(cue.timeSec / 60)}:{(cue.timeSec % 60).toFixed(1).padStart(4, "0")}
+            </span>
+            {cue.text}
           </div>
-        );
-      })}
+        ))}
+      </div>
     </div>
   );
 }

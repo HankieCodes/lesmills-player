@@ -1,9 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "module": "ESNext",
-    "moduleResolution": "Bundler"
-  },
-  "include": ["src/electron/preload.ts", "src/shared/**/*.ts"],
-  "exclude": ["node_modules", "out", "dist", "src/analyzer", "src/cache", "src/sync", "src/electron/main.ts"]
-}

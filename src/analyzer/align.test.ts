@@ -1,70 +1,82 @@
 import { describe, expect, it } from "vitest";
-import { buildEnvelope, crossCorrelation, hammingDistance, matchFingerprints } from "./align";
+import { crossCorrelation, FP_ITEM_SEC, hammingDistance, matchFingerprintSeries, popcount32 } from "./align";
 
-function hash(byte: number): number[] {
-  return [byte, byte ^ 0x55];
+function rng(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return (t ^ (t >>> 14)) >>> 0;
+  };
 }
 
-describe("hammingDistance", () => {
-  it("returns 0 for identical fingerprints", () => {
-    expect(hammingDistance([1, 2, 3], [1, 2, 3])).toBe(0);
+function randomSeries(length: number, seed: number): number[] {
+  const next = rng(seed);
+  return Array.from({ length }, () => next());
+}
+
+function addNoise(series: number[], flipProbability: number, seed: number): number[] {
+  const next = rng(seed);
+  return series.map((value) => {
+    let out = value;
+    for (let bit = 0; bit < 32; bit++) {
+      if (next() / 0xffffffff < flipProbability) out ^= 1 << bit;
+    }
+    return out >>> 0;
+  });
+}
+
+describe("popcount32 / hammingDistance", () => {
+  it("counts set bits", () => {
+    expect(popcount32(0)).toBe(0);
+    expect(popcount32(0xffffffff)).toBe(32);
+    expect(popcount32(0b1011)).toBe(3);
   });
 
-  it("counts differing bits", () => {
-    // 1 ^ 2 = 3 -> two bits differ
+  it("returns 0 for identical fingerprints and counts differing bits", () => {
+    expect(hammingDistance([1, 2, 3], [1, 2, 3])).toBe(0);
     expect(hammingDistance([1], [2])).toBe(2);
   });
 });
 
-describe("matchFingerprints", () => {
-  it("finds a zero offset for identical audio", () => {
-    const video = [
-      { timeSec: 60, hash: hash(7) },
-      { timeSec: 70, hash: hash(8) },
-      { timeSec: 80, hash: hash(9) },
-    ];
-    const track = [
-      { timeSec: 0, hash: hash(7) },
-      { timeSec: 10, hash: hash(8) },
-      { timeSec: 20, hash: hash(9) },
-    ];
-    const match = matchFingerprints(video, track);
+describe("matchFingerprintSeries", () => {
+  const video = randomSeries(3000, 1);
+
+  it("finds the exact offset of a clean track excerpt", () => {
+    const track = video.slice(1200, 1200 + 600);
+    const match = matchFingerprintSeries(video, track);
     expect(match).not.toBeNull();
-    expect(match?.offsetSec).toBe(60);
-    expect(match?.confidence).toBeCloseTo(1, 5);
-    expect(match?.method).toBe("chromaprint");
+    expect(match!.offsetSec).toBeCloseTo(1200 * FP_ITEM_SEC, 5);
+    expect(match!.confidence).toBeGreaterThan(0.9);
+    expect(match!.bitErrorRate).toBeLessThan(0.01);
   });
 
-  it("returns null when nothing matches", () => {
-    const video = [{ timeSec: 0, hash: [10, 20] }];
-    const track = [{ timeSec: 0, hash: [200, 210] }];
-    expect(matchFingerprints(video, track)).toBeNull();
+  it("still finds the offset when 25% of the bits are flipped (voice-over / reverb)", () => {
+    const track = addNoise(video.slice(500, 500 + 500), 0.25, 99);
+    const match = matchFingerprintSeries(video, track);
+    expect(match).not.toBeNull();
+    expect(match!.offsetSec).toBeCloseTo(500 * FP_ITEM_SEC, 5);
+    expect(match!.confidence).toBeGreaterThan(0.3);
+    expect(match!.bitErrorRate).toBeLessThan(0.35);
+  });
+
+  it("does not report a confident match for unrelated audio", () => {
+    const track = randomSeries(500, 12345);
+    const match = matchFingerprintSeries(video, track);
+    expect(match === null || match.confidence < 0.3).toBe(true);
   });
 });
 
 describe("crossCorrelation", () => {
-  it("finds a zero offset for identical envelopes", () => {
-    const env = [0, 1, 2, 1, 0, 0, 0, 0];
-    const result = crossCorrelation(env, env, 0.25);
+  it("finds the lag of a track envelope inside a longer video envelope", () => {
+    const next = rng(5);
+    const video = Array.from({ length: 400 }, () => next() / 0xffffffff);
+    const track = video.slice(120, 200);
+    const result = crossCorrelation(video, track, 0.25);
     expect(result).not.toBeNull();
-    expect(result?.offsetSec).toBe(0);
-    expect(result?.confidence).toBeGreaterThan(0.9);
-  });
-
-  it("finds a shifted offset", () => {
-    const env = [0, 1, 2, 1, 0, 0, 0, 0];
-    const shifted = [0, 0, 0, 0, 0, 1, 2, 1];
-    const result = crossCorrelation(env, shifted, 0.25);
-    expect(result).not.toBeNull();
-    // The signal starts at index 5 of `shifted`, which is index 1 of the original.
-    expect(Math.abs(result!.offsetSec - 1)).toBeLessThan(0.5);
-  });
-});
-
-describe("buildEnvelope", () => {
-  it("produces frames of mean absolute amplitude", () => {
-    const env = buildEnvelope([0.5, 0.5, 0.5, 0.5], 4, 4);
-    expect(env.length).toBeGreaterThan(0);
-    expect(env[0]).toBeCloseTo(0.5, 5);
+    expect(result!.offsetSec).toBeCloseTo(120 * 0.25, 5);
+    expect(result!.confidence).toBeGreaterThan(0.99);
   });
 });

@@ -3,6 +3,7 @@ import tseslint from "typescript-eslint";
 import reactHooks from "eslint-plugin-react-hooks";
 import prettier from "eslint-config-prettier";
 import { defineConfig, globalIgnores } from "eslint/config";
+import globals from "globals";
 
 export default defineConfig([
   globalIgnores(["out/**", "dist/**", "node_modules/**", "coverage/**"]),
@@ -14,6 +15,7 @@ export default defineConfig([
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: "module",
+      globals: { ...globals.node, ...globals.browser },
     },
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
